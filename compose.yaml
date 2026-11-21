@@ -1,0 +1,332 @@
+name: ai
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
+      LLAMA_API_BASE: ${LLAMA_API_BASE:-http://host.docker.internal:8080/v1}
+      LLAMA_API_KEY: ${LLAMA_API_KEY:-local-no-auth}
+    volumes:
+      - ./config/litellm.yaml:/app/config.yaml:ro
+    networks:
+      - local
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    environment:
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
+      VECTOR_DB: qdrant
+      QDRANT_URI: http://qdrant:6333
+      RAG_EMBEDDING_ENGINE: openai
+      RAG_EMBEDDING_MODEL: bge-small-en-v1.5
+      RAG_OPENAI_API_BASE_URL: http://embedding-server:8081/v1
+      RAG_OPENAI_API_KEY: local-no-auth
+      CHUNK_SIZE: "384"
+      CHUNK_OVERLAP: "64"
+      ENABLE_MEMORIES: "true"
+      ENABLE_WEB_SEARCH: ${ENABLE_WEB_SEARCH:-false}
+      ENABLE_WEB_SEARCH_CONFIRMATION: "true"
+      WEB_SEARCH_ENGINE: searxng
+      WEB_SEARCH_RESULT_COUNT: "5"
+      SEARXNG_QUERY_URL: http://searxng:8080/search
+      WEB_LOADER_ENGINE: external
+      EXTERNAL_WEB_LOADER_URL: http://web-loader:8001/load
+      EXTERNAL_WEB_LOADER_API_KEY: ${WEB_LOADER_API_KEY:-local-web-loader-change-me}
+      ENABLE_TOOL_SERVERS: "true"
+      WEBUI_AUTH: "false"
+      ENABLE_SIGNUP: "false"
+      SCARF_NO_ANALYTICS: "true"
+      DO_NOT_TRACK: "true"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      litellm:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      embedding-server:
+        condition: service_started
+      memory-mcp:
+        condition: service_started
+    networks:
+      - local
+    restart: unless-stopped
+
+  ingress:
+    build: ./ingress
+    image: local-ai-ingress:latest
+    command: ["sh", "-c", "ip route del default && exec su-exec nginx nginx -g 'daemon off;'"]
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    dns:
+      - 127.0.0.1
+    ports:
+      - "127.0.0.1:${OPEN_WEBUI_PORT:-3000}:3000"
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+      - "127.0.0.1:${OPENHANDS_PORT:-8000}:8000"
+    depends_on:
+      - open-webui
+    networks:
+      - host-access
+      - local
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  openhands:
+    image: ghcr.io/openhands/agent-canvas:1.43.0
+    profiles: ["openhands"]
+    ports:
+      - "127.0.0.1:9010-9012:9010-9012"
+    group_add:
+      - "${OPENHANDS_WORKSPACE_GID:-1000}"
+    environment:
+      PORT: "8000"
+      LLM_MODEL: litellm_proxy/local-model
+      LLM_BASE_URL: http://litellm:4000
+      LLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
+      AGENT_CANVAS_ALLOW_LAN_SESSION_KEY: "true"
+      AGENT_CANVAS_DISABLE_TELEMETRY: "1"
+      OPENHANDS_WEB_SEARCH_MCP_ENABLED: ${ENABLE_WEB_SEARCH:-true}
+      NPM_CONFIG_CACHE: /home/openhands/.npm
+      NPM_CONFIG_PREFIX: /home/openhands/.local/npm
+      BROWSER_MCP_HOME: /home/openhands/.openhands/browsermcp
+      DO_NOT_TRACK: "1"
+    volumes:
+      - openhands-state:/home/openhands/.openhands
+      - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
+      - ./runtime/openhands-npm-cache:/home/openhands/.npm
+      - ./runtime/openhands-npm-global:/home/openhands/.local/npm
+      - ./runtime/mcp-packages.json:/home/openhands/.local/mcp-packages.json:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: ${OPENHANDS_MEMORY_LIMIT:-16g}
+    cpus: ${OPENHANDS_CPU_LIMIT:-8}
+    networks:
+      - local
+      - openhands-egress
+    depends_on:
+      litellm:
+        condition: service_started
+      memory-mcp:
+        condition: service_started
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - local
+    restart: unless-stopped
+
+  embedding-server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command:
+      - -m
+      - /models/bge-small-en-v1.5/bge-small-en-v1.5-f16.gguf
+      - --alias
+      - bge-small-en-v1.5
+      - --embedding
+      - --pooling
+      - mean
+      - --ctx-size
+      - "512"
+      - --parallel
+      - "1"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+      - -ngl
+      - "0"
+    volumes:
+      - ./models:/models:ro
+    networks:
+      - local
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  memory-mcp:
+    build:
+      context: ./services/memory-mcp
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: openhands_memories
+      EMBEDDING_URL: http://embedding-server:8081/v1
+      EMBEDDING_MODEL: bge-small-en-v1.5
+      EMBEDDING_DIMENSIONS: "384"
+    depends_on:
+      - qdrant
+      - embedding-server
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - local
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    profiles: ["web-search"]
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_PORT: "8080"
+      SEARXNG_BIND_ADDRESS: 0.0.0.0
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-local-searxng-change-me}
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+      SEARXNG_IMAGE_PROXY: "false"
+    volumes:
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - local
+      - search-egress
+    restart: unless-stopped
+
+  web-search-mcp:
+    build:
+      context: ./services/web-tools
+    profiles: ["web-search"]
+    command: ["python", "-m", "app.search_mcp"]
+    environment:
+      SEARXNG_URL: http://searxng:8080/search
+    depends_on:
+      - searxng
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - local
+      - search-egress
+    restart: unless-stopped
+
+  web-loader:
+    build:
+      context: ./services/web-tools
+    profiles: ["web-search"]
+    command:
+      - uvicorn
+      - app.web_loader:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    environment:
+      WEB_LOADER_API_KEY: ${WEB_LOADER_API_KEY:-local-web-loader-change-me}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - local
+      - search-egress
+    restart: unless-stopped
+
+  mcp-installer:
+    image: node:22-bookworm-slim
+    profiles: ["mcp-install"]
+    command: ["npm"]
+    user: "${OPENHANDS_UID:-10001}:${OPENHANDS_WORKSPACE_GID:-1000}"
+    working_dir: /tmp
+    environment:
+      NPM_CONFIG_CACHE: /mcp-cache
+      NPM_CONFIG_PREFIX: /mcp-global
+    volumes:
+      - ./runtime/openhands-npm-cache:/mcp-cache
+      - ./runtime/openhands-npm-global:/mcp-global
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - search-egress
+
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    profiles: ["cuda"]
+    command:
+      - -m
+      - /models/${MODEL_PATH:-not-selected.gguf}
+      - --alias
+      - local-model
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --fit
+      - "on"
+      - -ngl
+      - ${GPU_LAYERS:-auto}
+      - --ctx-size
+      - ${CONTEXT_SIZE:-8192}
+      - --parallel
+      - "1"
+      - --flash-attn
+      - "on"
+    volumes:
+      - ./models:/models:ro
+    networks:
+      - local
+    gpus: all
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:
+  openhands-state:
+  qdrant-data:
+  searxng-cache:
+
+networks:
+  local:
+    internal: true
+  search-egress:
+    driver: bridge
+  openhands-egress:
+    driver: bridge
+    internal: ${OPENHANDS_EGRESS_ISOLATED:-true}
+  host-access:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
