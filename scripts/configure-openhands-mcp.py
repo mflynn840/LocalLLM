@@ -150,6 +150,16 @@ def configure():
         set_enabled("local-web-search", False)
         print("OpenHands web-search MCP is disabled.")
 
+    save_server(
+        "local-file-edit",
+        {
+            "url": "http://file-edit-mcp:8000/mcp",
+            "transport": "streamable-http",
+            "enabled": True,
+            "description": "Line-based file editing with revision checks and diffs",
+        },
+    )
+
     for record in load_installed_servers():
         save_server(record["id"], record["server"])
 

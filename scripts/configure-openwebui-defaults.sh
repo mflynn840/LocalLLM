@@ -144,9 +144,43 @@ def configure_noauth_identity():
         )
         changed = True
 
+def configure_authenticated_admin():
+    global changed
+    if os.environ.get("WEBUI_AUTH", "true").lower() in {"0", "false", "no", "off"}:
+        return
+    password = os.environ.get("WEBUI_ADMIN_PASSWORD", "")
+    if not password:
+        raise RuntimeError("OPEN_WEBUI_ADMIN_PASSWORD is required when WebUI authentication is enabled.")
+    admins = db.execute("SELECT id, email FROM user WHERE role='admin'").fetchall()
+    if not admins:
+        # Fresh Open WebUI databases create the first admin through the signup page.
+        return
+    system_admin = [row for row in admins if row[1].lower() == "admin@localhost"]
+    if len(system_admin) == 1:
+        user_id, email = system_admin[0]
+    elif len(admins) == 1:
+        user_id, email = admins[0]
+    else:
+        raise RuntimeError("Multiple Open WebUI administrators found; refusing to choose one for password setup.")
+    auth = db.execute("SELECT password, active FROM auth WHERE id=?", (user_id,)).fetchone()
+    if auth is None:
+        raise RuntimeError("Open WebUI administrator has no matching authentication record.")
+    password_hash, active = auth
+    from open_webui.utils.auth import get_password_hash, verify_password
+    needs_password = not password_hash or not asyncio.run(verify_password(password, password_hash))
+    if needs_password or not active:
+        new_hash = asyncio.run(get_password_hash(password)) if needs_password else password_hash
+        db.execute(
+            "UPDATE auth SET password=?, active=1, session_stamp=? WHERE id=?",
+            (new_hash, str(uuid.uuid4()), user_id),
+        )
+        changed = True
+
+configure_authenticated_admin()
 configure_noauth_identity()
 
 rows = {
+    "ui.enable_signup": True,
     "web.search.enable": enabled,
     "web.search.engine": "searxng",
     "web.search.result_count": 5,

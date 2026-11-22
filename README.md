@@ -32,7 +32,7 @@ Run installation while online:
 ./install.sh
 ```
 
-The installer creates `.env` if needed, generates local LiteLLM, SearXNG, and web-loader secrets, pulls service images, builds local services, and downloads Gemma 4 12B Q4_K_M plus the BGE embedding model. It also installs Browser MCP into a persistent OpenHands npm prefix through a temporary installer container. Existing non-placeholder secrets, models, OpenHands data, and Docker volumes are preserved. `.env` is kept private with mode `600`.
+The installer creates `.env` if needed, generates local LiteLLM, SearXNG, and web-loader secrets, pulls service images, builds local services, and downloads Gemma 4 12B Q4_K_M plus the BGE embedding model. It installs Browser MCP into a persistent OpenHands npm prefix through a temporary installer container. On WSL, it also installs Windows logon tasks for backend startup and LAN forwarding (with an administrator prompt). Existing non-placeholder secrets, models, OpenHands data, and Docker volumes are preserved. `.env` is kept private with mode `600`.
 
 Choose a different startup model during installation; repeat `--model` to download several models sequentially. The first model becomes the persisted default:
 
@@ -43,52 +43,108 @@ Choose a different startup model during installation; repeat `--model` to downlo
 
 Omit the quantization suffix to use the model catalog default. You can also set `DEFAULT_MODEL` and `DEFAULT_QUANT` in `.env`; `start.sh` uses those values when no model is passed.
 
-Start the services in the background:
+Start backend mode (the default):
 
 ```sh
 ./start.sh
 ```
 
-The default is CUDA + OpenHands + the model configured in `.env`, web search enabled, and the `project` sandbox. Startup configures the local LiteLLM profile and MCP servers in OpenHands, then applies search and MCP defaults in Open WebUI. No LLM-provider or MCP-server setup in either UI is required.
+Backend mode starts CUDA + OpenHands + the model configured in `.env`, with local web search enabled. It runs the model server, PostgreSQL-backed LiteLLM gateway, Open WebUI, your owner OpenHands instance, and the user registration portal.
 
-- **Open WebUI:** `http://localhost:3000` — general chat, ready without a login prompt.
-- **OpenHands:** `http://localhost:8000/canvas` — coding agent with the project mounted at `/projects`.
+- **Open WebUI:** `http://localhost:3000` — individual chat accounts.
+- **OpenHands:** `http://localhost:8000/canvas` — owner agent with the project mounted at `/projects`.
+- **Registration portal:** `${BACKEND_PUBLIC_URL}/register` — requires the shared registration code and creates personal model accounts.
 
-Open WebUI authentication is disabled for this single-user, localhost-only setup. Anyone who can reach the WebUI is effectively an administrator; do not bind its ports to a LAN address or expose them through a router. When an existing database has exactly one administrator, startup changes that account's email and password to Open WebUI's local no-auth identity in place, preserving its user ID and chat history. If the existing account layout is ambiguous, startup stops rather than changing accounts automatically. Open WebUI's no-auth flow uses the built-in `admin@localhost` / `admin` identity; if you re-enable password authentication, change that password immediately.
+Open WebUI requires login and allows signup. On a new install, Open WebUI creates the first admin from `WEBUI_ADMIN_EMAIL` and `WEBUI_ADMIN_PASSWORD`; existing no-auth installs keep their account and chat history, with its password set to the generated value. Keep `.env` private.
 
-OpenHands uses the local LiteLLM profile `litellm_proxy/local-model` at `http://litellm:4000`. Startup creates and activates the default profile if it is missing or still an untouched first-run placeholder; it preserves an existing customized profile. The API key comes from `LITELLM_MASTER_KEY`.
+### Other users' PCs
+
+The backend shares its model gateway and Open WebUI. Each person runs a separate OpenHands agent on their own PC, with their own files and conversations. Run `./start.sh --mode client` to start the portable deployment from `client/`, or distribute that folder. See [client/README.md](client/README.md).
+
+1. Set a private `MODEL_SIGNUP_CODE` in backend `.env` and share it with the user.
+2. After WSL starts, refresh the Windows port forwarding and LocalSubnet firewall rules:
+
+   ```sh
+   powershell.exe -ExecutionPolicy Bypass -File scripts/backend-lan.ps1
+   ```
+
+   This forwards TCP 3000 and 4000. It removes the old OpenHands TCP 8000 forwarding. Rerun after WSL restarts because its NAT IP can change.
+   To start backend mode and refresh forwarding automatically at Windows sign-in, install the scheduled task once:
+
+   ```powershell
+   powershell.exe -ExecutionPolicy Bypass -File scripts/install-backend-autostart.ps1
+   ```
+
+   Windows will request administrator approval. One task starts `./start.sh` as your normal WSL user; a separate elevated task refreshes NAT forwarding. The start task waits for Docker Desktop and retries if it is still starting; its output is logged at `runtime/backend-boot.log`.
+3. The user opens `http://<backend-windows-ip>:4000/register`, registers, follows the invitation, and creates a personal `local-model` key. Each key is limited to the local model and a $5 maximum budget per 30 days.
+4. Users can create separate Open WebUI accounts at `http://<backend-windows-ip>:3000`. Client agents use the backend's SearXNG `search_web` and guarded `fetch_url` tools through the model gateway port.
+
+Do not forward these ports from your router or expose them to the public internet. LAN traffic currently uses HTTP and does not encrypt credentials or model keys in transit; use a trusted local network only. Add TLS before using an untrusted network.
+
+Backend owner OpenHands uses `LITELLM_MASTER_KEY` internally. Client instances use each user's personal virtual key; the master key is never distributed.
 
 OpenCode has automatic compaction enabled in [config/opencode.json](./config/opencode.json). It starts compacting with a 15% context buffer (at least 16,000 tokens), so with a 100,000-token context it begins at about 84,000 tokens. The compacted conversation keeps roughly the latest 15,000 tokens alongside its summary. Compaction uses the selected local model through LiteLLM.
 
 ## Use the coding agent
 
-Open WebUI is a chat interface; use OpenHands when you want an agent to inspect or edit files. The installer configures the project root as `WORKSPACE_DIR` and mounts it into OpenHands as `/projects`. The startup helper grants the OpenHands container group access to project files while preserving `.env` as mode `600`. It does not change permissions inside `.git`, `.venv`, `models`, `runtime`, or build directories. OpenHands workspaces are restricted to this project directory; keep unrelated projects and secrets out of it.
+Open WebUI is a chat interface; use OpenHands when you want an agent to inspect or edit files. The backend owner OpenHands mounts the project root at `/projects` and the WSL filesystem at `/host`. This is the owner-facing full-control agent. Client mode mounts only `client/workspace`; it has no host filesystem mount or Docker socket.
 
-OpenHands runs in a restricted container: no Docker socket, privileged mode, or host-shell access; Linux capabilities are dropped, `no-new-privileges` is enabled, process count is limited to 512, and memory/CPU default to 16 GiB / 8 CPUs (`OPENHANDS_MEMORY_LIMIT` and `OPENHANDS_CPU_LIMIT` in `.env`). UI ports bind to localhost. Start with a bounded task, review changes, and ask the agent to run relevant tests.
+OpenHands runs as container root with `HOME=/home/openhands` so its settings, session key, and profiles stay in the mounted persistent state volume. The entire WSL filesystem is mounted read/write at `/host`; DAC override capabilities let it access files regardless of their host ownership or mode. Commands run inside the container, and the host Docker socket is not mounted. Process count is limited to 512, and memory/CPU default to 16 GiB / 8 CPUs (`OPENHANDS_MEMORY_LIMIT` and `OPENHANDS_CPU_LIMIT` in `.env`). The owner UI binds to localhost. OpenHands has read/write access to files and credentials in WSL through `/host`, and full-control mode can run commands without per-command approval by default. Start with a bounded task and review changes.
 
 ### Sandbox levels
 
 Select the OpenHands access mode at startup:
 
 ```sh
+./start.sh --sandbox-level restricted
 ./start.sh --sandbox-level read-only
-./start.sh --sandbox-level project
-./start.sh --sandbox-level networked
+./start.sh --sandbox-level read-write
+./start.sh --sandbox-level full-control
 ```
 
-| Level | Project mount | OpenHands internet egress | Use |
-|---|---|---|---|
-| `read-only` | Read-only | Blocked | Inspect, explain, and plan without modifying project files |
-| `project` (default) | Read/write | Blocked | Normal coding against this project |
-| `networked` | Read/write | Allowed | Tasks that need package downloads or arbitrary internet access |
+`project` and `networked` are kept as aliases for `read-write` and `full-control`
+respectively for backward compatibility.
 
-The setting is applied by recreating the OpenHands service as needed. `networked` gives the agent broad outbound access, not just package-registry access. These modes are container boundaries, not a substitute for reviewing agent changes or isolating sensitive host data. OpenCode runs as a host CLI and is **not** restricted by these OpenHands sandbox settings.
+| Level | Project mount | OpenHands internet egress | Shell commands | Use |
+|---|---|---|---|---|
+| `restricted` | Read-only | Blocked | Disabled | Inspect and plan only; most locked-down container (read-only root filesystem) |
+| `read-only` | Read-only | Blocked | Disabled | Read files, explain, and plan without modifying project files |
+| `read-write` | Read/write | Blocked | Disabled | Normal coding: read and edit project files, no internet |
+| `full-control` (default) | Read/write | Allowed | Enabled | Read, write, and run shell commands; internet access for package downloads |
+
+The setting is applied by recreating the OpenHands service as needed. `full-control` gives the
+agent broad outbound access and shell command execution. These modes are container boundaries,
+not a substitute for reviewing agent changes or isolating sensitive host data. OpenCode runs as a
+host CLI and is **not** restricted by these OpenHands sandbox settings.
+
+To change the setting permanently, edit `OPENHANDS_SANDBOX_LEVEL` in `.env` (or pass
+`--sandbox-level` on each `./start.sh` run), then restart OpenHands:
+
+```sh
+./start.sh --agent openhands --sandbox-level full-control
+```
+
+### Command approval
+
+When using a mode that allows shell commands (`full-control`), you can require
+OpenHands to ask for approval before executing each command. Edit `.env`:
+
+```sh
+OPENHANDS_REQUIRE_APPROVAL=true
+```
+
+Then restart OpenHands. With approval required, OpenHands will present each proposed
+shell command for your review before running it. This works independently of the
+sandbox level — combine it with any mode that permits commands. The default is
+`OPENHANDS_REQUIRE_APPROVAL=false`.
 
 ## Persistent memory and document RAG
 
 Qdrant stores data in a persistent Docker volume. The local BGE-small model creates 384-dimensional embeddings without sending content to a remote service. Open WebUI document retrieval and explicit memory tools use this Qdrant server, with separate collections.
 
 OpenHands durable memory is **explicit**, not an automatic transcript recorder. Startup automatically registers its memory tools (search, save, and delete) against Qdrant's `openhands_memories` collection. The same memory server and the local web-search server are registered in Open WebUI. Choose enabled local tools in the chat's tool picker when you want a conversation to use them. Open WebUI tool-server access is admin-only by default; an admin can share a connection with other users in its access settings. Memory tools can save and delete shared memories, so share only with trusted users.
+
+OpenHands also has a `local-file-edit` MCP with line-numbered reads, exact or whitespace-tolerant replacements, helpful mismatch excerpts, and hash-guarded multi-file edits. `search_files` finds candidate paths and hashes; `bulk_edit` validates every target before applying the changes. Creating a file refuses to overwrite an existing one. The helper runs as a separate service using a pinned MCP SDK and can reach the WSL filesystem through `/host`.
 
 Ask an agent to save useful decisions deliberately; never save credentials, tokens, or private personal information. Search results are reference data, not trusted instructions. Memory and search MCPs are private to the Docker network; only the Browser MCP relay is published, and only on host loopback.
 
@@ -193,7 +249,7 @@ If the binary is not at `llama.cpp/build/bin/llama-server`, set `LLAMA_SERVER_PA
 
 ## Offline use and network
 
-Complete model downloads, container image pulls/builds, and package installations while online. With the default `project` sandbox, OpenHands has no general internet egress; optional search services and the temporary npm installer have separate outbound access. `networked` deliberately grants OpenHands internet access. Hugging Face model downloads happen on the host, not inside the model-serving stack. For disconnected use, run `./start.sh --no-web-search --sandbox-level project`, keep the host offline, and do not add remote MCP servers. UI/API ports bind only to `127.0.0.1` through an ingress proxy.
+Complete model downloads, container image pulls/builds, and package installations while online. With the default `full-control` sandbox, OpenHands has internet access and shell command execution without per-command approval. Optional search services and the temporary npm installer have separate outbound access. Hugging Face model downloads happen on the host, not inside the model-serving stack. For disconnected use, run `./start.sh --no-web-search --sandbox-level read-only`, keep the host offline, and do not add remote MCP servers. UI/API ports bind only to `127.0.0.1` through an ingress proxy.
 
 ## Management
 

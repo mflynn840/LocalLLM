@@ -10,7 +10,7 @@ usage() {
     cat <<'EOF'
 Usage:
   scripts/stack.sh preload
-  scripts/stack.sh up --backend metal|cuda --agent openhands|opencode --model ALIAS [--quant QUANT] [--context TOKENS] [--gpu-layers N] [--web-search|--no-web-search] [--sandbox-level read-only|project|networked]
+  scripts/stack.sh up --backend metal|cuda --agent openhands|opencode --model ALIAS [--quant QUANT] [--context TOKENS] [--gpu-layers N] [--web-search|--no-web-search] [--sandbox-level restricted|read-only|read-write|full-control|project|networked]
   scripts/stack.sh status
   scripts/stack.sh down
 
@@ -24,8 +24,52 @@ EOF
 ensure_env() {
     if [[ ! -f "$ROOT/.env" ]]; then
         (umask 077 && cp "$ROOT/.env.example" "$ROOT/.env")
-        echo "Created .env from .env.example. Change LITELLM_MASTER_KEY before use."
+        echo "Created .env from .env.example."
     fi
+    python3 - "$ROOT/.env" <<'PY'
+import os
+import secrets
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+values = {
+    line.split("=", 1)[0]: line.split("=", 1)[1]
+    for line in lines
+    if "=" in line and not line.lstrip().startswith("#")
+}
+placeholders = {
+    "LITELLM_MASTER_KEY": {"sk-local-dev-change-me"},
+    "SEARXNG_SECRET": {"generate-with-install"},
+    "WEB_LOADER_API_KEY": {"generate-with-install"},
+}
+for name in (
+    "LITELLM_MASTER_KEY", "LOCAL_BACKEND_API_KEY", "OPENHANDS_LAN_AUTH_PASSWORD",
+    "LITELLM_DB_PASSWORD", "LITELLM_SALT_KEY", "MODEL_SIGNUP_CODE",
+    "WEBUI_ADMIN_PASSWORD", "WEBUI_SECRET_KEY", "SEARXNG_SECRET", "WEB_LOADER_API_KEY",
+):
+    value = values.get(name, "").strip().strip("\"'")
+    if value and value not in placeholders.get(name, {"generate-with-install"}):
+        continue
+    value = ("sk-" if name == "LITELLM_MASTER_KEY" else "") + secrets.token_urlsafe(32)
+    prefix = name + "="
+    indices = [index for index, line in enumerate(lines) if line.startswith(prefix)]
+    if indices:
+        lines[indices[-1]] = prefix + value
+    else:
+        lines.append(prefix + value)
+for name, default in (("BACKEND_BIND_ADDRESS", "0.0.0.0"), ("OPENHANDS_BIND_ADDRESS", "127.0.0.1")):
+    prefix = name + "="
+    if not any(line.startswith(prefix) for line in lines):
+        lines.append(prefix + default)
+lines = [
+    "OPENHANDS_BIND_ADDRESS=127.0.0.1" if line.startswith("OPENHANDS_BIND_ADDRESS=") else line
+    for line in lines
+]
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
 }
 
 stop_local_model() {
@@ -79,8 +123,8 @@ check_agent_lock() {
 
 preload() {
     ensure_env
-    docker compose --env-file "$ROOT/.env" pull litellm open-webui openhands qdrant embedding-server
-    docker compose --env-file "$ROOT/.env" build ingress memory-mcp web-search-mcp web-loader
+    docker compose --env-file "$ROOT/.env" pull litellm litellm-db open-webui openhands qdrant embedding-server
+    docker compose --env-file "$ROOT/.env" build ingress memory-mcp file-edit-mcp web-search-mcp web-loader model-portal
     docker compose --env-file "$ROOT/.env" --profile cuda pull llama-server
     docker compose --env-file "$ROOT/.env" --profile web-search pull searxng
     docker compose --env-file "$ROOT/.env" --profile mcp-install pull mcp-installer
@@ -165,22 +209,38 @@ up() {
     . "$ROOT/.env"
     set +a
     context="${context:-${CONTEXT_SIZE:-8192}}"
-    sandbox_level="${sandbox_level:-${OPENHANDS_SANDBOX_LEVEL:-project}}"
+    sandbox_level="${sandbox_level:-${OPENHANDS_SANDBOX_LEVEL:-full-control}}"
     case "$sandbox_level" in
+        restricted)
+            export OPENHANDS_WORKSPACE_MODE=ro
+            export OPENHANDS_HOST_FILESYSTEM_MODE=ro
+            export OPENHANDS_EGRESS_ISOLATED=true
+            export OPENHANDS_ALLOW_COMMANDS=false
+            export OPENHANDS_READ_ONLY_ROOT=true
+            ;;
         read-only)
             export OPENHANDS_WORKSPACE_MODE=ro
+            export OPENHANDS_HOST_FILESYSTEM_MODE=ro
             export OPENHANDS_EGRESS_ISOLATED=true
+            export OPENHANDS_ALLOW_COMMANDS=false
+            export OPENHANDS_READ_ONLY_ROOT=false
             ;;
-        project)
+        read-write|project)
             export OPENHANDS_WORKSPACE_MODE=rw
+            export OPENHANDS_HOST_FILESYSTEM_MODE=ro
             export OPENHANDS_EGRESS_ISOLATED=true
+            export OPENHANDS_ALLOW_COMMANDS=false
+            export OPENHANDS_READ_ONLY_ROOT=false
             ;;
-        networked)
+        full-control|networked)
             export OPENHANDS_WORKSPACE_MODE=rw
+            export OPENHANDS_HOST_FILESYSTEM_MODE=rw
             export OPENHANDS_EGRESS_ISOLATED=false
+            export OPENHANDS_ALLOW_COMMANDS=true
+            export OPENHANDS_READ_ONLY_ROOT=false
             ;;
         *)
-            echo "--sandbox-level must be read-only, project, or networked." >&2
+            echo "--sandbox-level must be restricted, read-only, read-write, or full-control (project and networked are aliases)." >&2
             exit 2
             ;;
     esac
@@ -252,7 +312,7 @@ up() {
     fi
 
     local profiles=()
-    local services=(litellm open-webui ingress)
+    local services=(litellm litellm-db model-portal open-webui ingress)
     [[ "$backend" == "cuda" ]] && profiles+=(--profile cuda)
     if [[ "$agent" == "openhands" ]]; then
         profiles+=(--profile openhands)
@@ -278,6 +338,7 @@ up() {
         fi
     fi
 
+    docker compose --env-file "$ROOT/.env" build ingress model-portal
     if ! docker compose --env-file "$ROOT/.env" "${profiles[@]}" up -d --wait "${services[@]}"; then
         stop_local_model
         exit 1
@@ -289,11 +350,12 @@ up() {
     printf '%s\n' "$agent" > "$MODE_FILE"
     echo "Stack ready. Model: $model${quant:+ ($quant)}; agent mode: $agent."
     echo "Open WebUI: http://localhost:${OPEN_WEBUI_PORT:-3000}"
-    echo "Open WebUI authentication is disabled; do not expose it beyond localhost."
+    echo "Open WebUI uses accounts/sign-up; a generated owner password is in the private .env."
+    echo "Model accounts: ${BACKEND_PUBLIC_URL:-http://localhost:${LITELLM_PORT:-4000}}/register"
     if [[ "$agent" == "openhands" ]]; then
         echo "OpenHands sandbox: $sandbox_level"
         echo "OpenHands:   http://localhost:${OPENHANDS_PORT:-8000}/canvas"
-        echo "Memory and search MCPs are provisioned automatically."
+        echo "Memory, file-editing, and search MCPs are provisioned automatically."
     else
         echo "OpenCode runs on the host and is not constrained by OpenHands sandbox settings."
         echo "OpenCode CLI: run scripts/code.sh from your project directory."

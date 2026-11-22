@@ -1,0 +1,28 @@
+name: local-ai-client
+
+services:
+  openhands:
+    image: ghcr.io/openhands/agent-canvas:1.43.0
+    user: "0:0"
+    ports:
+      - "127.0.0.1:${CLIENT_OPENHANDS_PORT:-8000}:8000"
+    environment:
+      HOME: /home/openhands
+      PORT: "8000"
+      LLM_MODEL: litellm_proxy/local-model
+      LLM_BASE_URL: ${MODEL_SERVER_URL:?Set MODEL_SERVER_URL in client/.env}/v1
+      LLM_API_KEY: ${MODEL_API_KEY:?Set MODEL_API_KEY in client/.env}
+      LOCAL_BACKEND_API_KEY: ${LOCAL_BACKEND_API_KEY:?Set LOCAL_BACKEND_API_KEY in client/.env}
+      REMOTE_WEB_SEARCH_MCP_URL: ${MODEL_SERVER_URL:?Set MODEL_SERVER_URL in client/.env}/mcp
+      AGENT_CANVAS_DISABLE_TELEMETRY: "1"
+      OPENHANDS_ALLOW_COMMANDS: "true"
+      OPENHANDS_REQUIRE_APPROVAL: "false"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - openhands-state:/home/openhands/.openhands
+      - ./workspace:/projects:rw
+    pids_limit: 512
+    restart: unless-stopped
+
+volumes:
+  openhands-state:

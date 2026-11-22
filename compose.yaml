@@ -6,12 +6,54 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY in .env}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD in .env}@litellm-db:5432/litellm
       LLAMA_API_BASE: ${LLAMA_API_BASE:-http://host.docker.internal:8080/v1}
       LLAMA_API_KEY: ${LLAMA_API_KEY:-local-no-auth}
     volumes:
       - ./config/litellm.yaml:/app/config.yaml:ro
+    depends_on:
+      litellm-db:
+        condition: service_healthy
     networks:
       - local
+    restart: unless-stopped
+
+  litellm-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD in .env}
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - local
+    restart: unless-stopped
+
+  model-portal:
+    build: ./services/model-portal
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      MODEL_SIGNUP_CODE: ${MODEL_SIGNUP_CODE:?Set MODEL_SIGNUP_CODE in .env}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-http://localhost:4000}
+      LITELLM_INTERNAL_URL: http://litellm:4000
+    networks:
+      - local
+    depends_on:
+      litellm:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
 
   open-webui:
@@ -37,8 +79,11 @@ services:
       EXTERNAL_WEB_LOADER_URL: http://web-loader:8001/load
       EXTERNAL_WEB_LOADER_API_KEY: ${WEB_LOADER_API_KEY:-local-web-loader-change-me}
       ENABLE_TOOL_SERVERS: "true"
-      WEBUI_AUTH: "false"
-      ENABLE_SIGNUP: "false"
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: "true"
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY in .env}
+      WEBUI_ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL:-owner@localhost}
+      WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASSWORD:?Set WEBUI_ADMIN_PASSWORD in .env}
       SCARF_NO_ANALYTICS: "true"
       DO_NOT_TRACK: "true"
     volumes:
@@ -59,7 +104,11 @@ services:
   ingress:
     build: ./ingress
     image: local-ai-ingress:latest
-    command: ["sh", "-c", "ip route del default && exec su-exec nginx nginx -g 'daemon off;'"]
+    environment:
+      OPENHANDS_LAN_AUTH_USER: ${OPENHANDS_LAN_AUTH_USER:?Set OPENHANDS_LAN_AUTH_USER in .env}
+      OPENHANDS_LAN_AUTH_PASSWORD: ${OPENHANDS_LAN_AUTH_PASSWORD:?Set OPENHANDS_LAN_AUTH_PASSWORD in .env}
+      BACKEND_BIND_ADDRESS: ${BACKEND_BIND_ADDRESS:-127.0.0.1}
+    command: ["/entrypoint.sh"]
     cap_drop:
       - ALL
     cap_add:
@@ -71,11 +120,12 @@ services:
     dns:
       - 127.0.0.1
     ports:
-      - "127.0.0.1:${OPEN_WEBUI_PORT:-3000}:3000"
-      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${OPEN_WEBUI_PORT:-3000}:3000"
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
       - "127.0.0.1:${OPENHANDS_PORT:-8000}:8000"
     depends_on:
       - open-webui
+      - model-portal
     networks:
       - host-access
       - local
@@ -90,18 +140,23 @@ services:
   openhands:
     image: ghcr.io/openhands/agent-canvas:1.43.0
     profiles: ["openhands"]
+    user: "0:0"
     ports:
       - "127.0.0.1:9010-9012:9010-9012"
     group_add:
       - "${OPENHANDS_WORKSPACE_GID:-1000}"
     environment:
+      HOME: /home/openhands
       PORT: "8000"
       LLM_MODEL: litellm_proxy/local-model
-      LLM_BASE_URL: http://litellm:4000
+      LLM_BASE_URL: http://litellm:4000/v1
       LLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
-      AGENT_CANVAS_ALLOW_LAN_SESSION_KEY: "true"
+      LOCAL_BACKEND_API_KEY: ${LOCAL_BACKEND_API_KEY:?Set LOCAL_BACKEND_API_KEY in .env}
       AGENT_CANVAS_DISABLE_TELEMETRY: "1"
       OPENHANDS_WEB_SEARCH_MCP_ENABLED: ${ENABLE_WEB_SEARCH:-true}
+      OPENHANDS_ALLOW_COMMANDS: ${OPENHANDS_ALLOW_COMMANDS:-true}
+      OPENHANDS_READ_ONLY_ROOT: ${OPENHANDS_READ_ONLY_ROOT:-false}
+      OPENHANDS_REQUIRE_APPROVAL: ${OPENHANDS_REQUIRE_APPROVAL:-false}
       NPM_CONFIG_CACHE: /home/openhands/.npm
       NPM_CONFIG_PREFIX: /home/openhands/.local/npm
       BROWSER_MCP_HOME: /home/openhands/.openhands/browsermcp
@@ -109,13 +164,20 @@ services:
     volumes:
       - openhands-state:/home/openhands/.openhands
       - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
+      - /:/host:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
       - ./runtime/openhands-npm-cache:/home/openhands/.npm
       - ./runtime/openhands-npm-global:/home/openhands/.local/npm
       - ./runtime/mcp-packages.json:/home/openhands/.local/mcp-packages.json:ro
+    read_only: ${OPENHANDS_READ_ONLY_ROOT:-false}
+    cap_add:
+      - SYS_RESOURCE
+      - SYS_ADMIN
+      - DAC_OVERRIDE
+      - DAC_READ_SEARCH
     cap_drop:
       - ALL
     security_opt:
-      - no-new-privileges:true
+      - seccomp=unconfined
     pids_limit: 512
     mem_limit: ${OPENHANDS_MEMORY_LIMIT:-16g}
     cpus: ${OPENHANDS_CPU_LIMIT:-8}
@@ -126,6 +188,8 @@ services:
       litellm:
         condition: service_started
       memory-mcp:
+        condition: service_started
+      file-edit-mcp:
         condition: service_started
     restart: unless-stopped
 
@@ -188,6 +252,17 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    networks:
+      - local
+    restart: unless-stopped
+
+  file-edit-mcp:
+    build:
+      context: ./services/file-edit-mcp
+    profiles: ["openhands"]
+    volumes:
+      - ${WORKSPACE_DIR:-./workspace}:/projects:rw
+      - /:/host:rw
     networks:
       - local
     restart: unless-stopped
@@ -314,6 +389,7 @@ services:
 
 volumes:
   open-webui-data:
+  litellm-db-data:
   openhands-state:
   qdrant-data:
   searxng-cache:
@@ -325,7 +401,7 @@ networks:
     driver: bridge
   openhands-egress:
     driver: bridge
-    internal: ${OPENHANDS_EGRESS_ISOLATED:-true}
+    internal: ${OPENHANDS_EGRESS_ISOLATED:-false}
   host-access:
     driver: bridge
     driver_opts:

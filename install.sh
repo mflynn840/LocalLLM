@@ -121,12 +121,24 @@ values = {
 }
 replacements = {
     "LITELLM_MASTER_KEY": ("sk-local-dev-change-me", "sk-" + secrets.token_urlsafe(32)),
+    "LOCAL_BACKEND_API_KEY": ("generate-with-install", secrets.token_urlsafe(32)),
+    "OPENHANDS_LAN_AUTH_PASSWORD": ("generate-with-install", secrets.token_urlsafe(32)),
+    "LITELLM_DB_PASSWORD": ("generate-with-install", secrets.token_urlsafe(32)),
+    "LITELLM_SALT_KEY": ("generate-with-install", secrets.token_urlsafe(32)),
+    "MODEL_SIGNUP_CODE": ("generate-with-install", secrets.token_urlsafe(32)),
+    "WEBUI_ADMIN_PASSWORD": ("generate-with-install", secrets.token_urlsafe(24)),
+    "WEBUI_SECRET_KEY": ("generate-with-install", secrets.token_urlsafe(48)),
     "SEARXNG_SECRET": ("generate-with-install", secrets.token_urlsafe(32)),
     "WEB_LOADER_API_KEY": ("generate-with-install", secrets.token_urlsafe(32)),
     "OPENHANDS_WORKSPACE_GID": ("1000", str(os.getgid())),
     "OPENHANDS_UID": ("10001", "10001"),
-    "OPENHANDS_SANDBOX_LEVEL": ("project", "project"),
+    "OPENHANDS_SANDBOX_LEVEL": ("full-control", "full-control"),
+    "OPENHANDS_ALLOW_COMMANDS": ("true", "true"),
+    "OPENHANDS_READ_ONLY_ROOT": ("false", "false"),
+    "OPENHANDS_REQUIRE_APPROVAL": ("true", "true"),
     "WEB_SEARCH_ENABLED": ("true", "true"),
+    "BACKEND_BIND_ADDRESS": ("127.0.0.1", "0.0.0.0"),
+    "OPENHANDS_BIND_ADDRESS": ("0.0.0.0", "127.0.0.1"),
 }
 for key, (placeholder, generated) in replacements.items():
     current = values.get(key, "").strip().strip("\"'")
@@ -186,6 +198,11 @@ echo "Downloading the local embedding model for persistent memory and RAG..."
     --include bge-small-en-v1.5-f16.gguf
 echo "Installing Browser MCP into the persistent OpenHands runtime..."
 "$ROOT/scripts/mcp.sh" install @browsermcp/mcp@2.5.0
+
+if command -v powershell.exe >/dev/null 2>&1 && ! powershell.exe -NoProfile -Command '$startup=Get-ScheduledTask -TaskName "Local AI Backend Startup" -ErrorAction SilentlyContinue; $forward=Get-ScheduledTask -TaskName "Local AI Backend" -ErrorAction SilentlyContinue; if ($startup -and $forward) { exit 0 } else { exit 1 }' >/dev/null 2>&1; then
+    echo "Installing Windows logon tasks for backend startup and LAN forwarding..."
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT/scripts/install-backend-autostart.ps1"
+fi
 
 echo
 echo "Installation complete."

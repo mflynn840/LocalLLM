@@ -2,6 +2,27 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+requested_mode="${MODE:-backend}"
+forwarded=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mode)
+            [[ $# -ge 2 ]] || { echo "--mode requires backend or client." >&2; exit 2; }
+            requested_mode="$2"
+            shift 2
+            ;;
+        *) forwarded+=("$1"); shift ;;
+    esac
+done
+set -- "${forwarded[@]}"
+if [[ "$requested_mode" == "client" ]]; then
+    exec "$ROOT/client/start.sh" "$@"
+elif [[ "$requested_mode" != "backend" ]]; then
+    echo "--mode must be backend or client." >&2
+    exit 2
+fi
+
 if [[ -f "$ROOT/.env" ]]; then
     set -a
     # shellcheck disable=SC1090
@@ -28,13 +49,14 @@ sandbox_level=""
 usage() {
     cat <<'EOF'
 Usage:
-  ./start.sh [--backend cuda|metal] [--agent openhands|opencode]
+  ./start.sh [--mode backend|client] [--backend cuda|metal] [--agent openhands|opencode]
              [--model ALIAS] [--quant QUANT] [--context TOKENS]
-             [--web-search|--no-web-search] [--sandbox-level read-only|project|networked]
+             [--web-search|--no-web-search] [--sandbox-level restricted|read-only|read-write|full-control|project|networked]
 
 Defaults: CUDA, OpenHands, and DEFAULT_MODEL/DEFAULT_QUANT from .env.
+Deployment mode defaults to backend. Use --mode client to start the portable local agent.
 Local web search is enabled by default; use --no-web-search to disable it.
-Sandbox defaults to project (project write access, no OpenHands internet egress).
+Sandbox defaults to OPENHANDS_SANDBOX_LEVEL from .env (full-control if unset).
 EOF
 }
 
@@ -120,6 +142,7 @@ cat <<EOF
 Getting started:
   OpenHands:   http://localhost:${OPENHANDS_PORT:-8000}/canvas
   Open WebUI:  http://localhost:${OPEN_WEBUI_PORT:-3000}
+  User signup: ${BACKEND_PUBLIC_URL:-http://localhost:${LITELLM_PORT:-4000}}/register
   Workspace:   ${WORKSPACE_DIR:-$ROOT/workspace} (mounted into OpenHands as /projects)
   Give OpenHands a small task, review its plan and changes, then ask it to test.
 
