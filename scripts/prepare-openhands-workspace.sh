@@ -20,6 +20,8 @@ if [[ "$workspace" != /* ]]; then
 fi
 workspace="$(realpath -m "$workspace")"
 root="$(realpath -e "$ROOT")"
+host_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
+host_home="$(realpath -e "$host_home")"
 if [[ ! -d "$workspace" ]]; then
     echo "OpenHands workspace does not exist: $workspace" >&2
     exit 1
@@ -31,6 +33,28 @@ case "$workspace/" in
         exit 1
         ;;
 esac
+
+python3 - "$ENV_FILE" "$host_home" "$workspace" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+values = {
+    "OPENHANDS_HOST_HOME": sys.argv[2],
+    "OPENHANDS_WORKSPACE_PATH": sys.argv[3],
+}
+lines = env_file.read_text(encoding="utf-8").splitlines()
+for key, value in values.items():
+    prefix = key + "="
+    matches = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+    if matches:
+        lines[matches[-1]] = prefix + value
+    else:
+        lines.append(prefix + value)
+env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+os.chmod(env_file, 0o600)
+PY
 
 host_gid="$(id -g)"
 if [[ "${OPENHANDS_WORKSPACE_GID:-$host_gid}" != "$host_gid" ]]; then

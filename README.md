@@ -52,7 +52,7 @@ Start backend mode (the default):
 Backend mode starts CUDA + OpenHands + the model configured in `.env`, with local web search enabled. It runs the model server, PostgreSQL-backed LiteLLM gateway, Open WebUI, your owner OpenHands instance, and the user registration portal.
 
 - **Open WebUI:** `http://localhost:3000` — individual chat accounts.
-- **OpenHands:** `http://localhost:8000/canvas` — owner agent with the project mounted at `/projects`.
+- **OpenHands:** `http://localhost:8000/canvas` — owner agent starts in the project and sees it at `/projects` and its original WSL path. The UI is ready to use with the configured local model and does not require a separate login; port 8000 is bound to localhost only.
 - **Registration portal:** `${BACKEND_PUBLIC_URL}/register` — requires the shared registration code and creates personal model accounts.
 
 Open WebUI requires login and allows signup. On a new install, Open WebUI creates the first admin from `WEBUI_ADMIN_EMAIL` and `WEBUI_ADMIN_PASSWORD`; existing no-auth installs keep their account and chat history, with its password set to the generated value. Keep `.env` private.
@@ -87,7 +87,7 @@ OpenCode has automatic compaction enabled in [config/opencode.json](./config/ope
 
 ## Use the coding agent
 
-Open WebUI is a chat interface; use OpenHands when you want an agent to inspect or edit files. The backend owner OpenHands mounts the project root at `/projects` and the WSL filesystem at `/host`. This is the owner-facing full-control agent. Client mode mounts only `client/workspace`; it has no host filesystem mount or Docker socket.
+Open WebUI is a chat interface; use OpenHands when you want an agent to inspect or edit files. The backend owner OpenHands mounts the project root at `/projects` and at its original WSL absolute path, and mounts the WSL user's home directory at the same absolute path inside the container. Shell commands start in the project root. This lets the owner agent use paths such as `/home/michael/AI/example` directly; `~` still means the container's own `/home/openhands`, so agent guidance maps user `~/...` paths to the WSL home. The rest of the WSL filesystem remains available under `/host`. Client mode mounts only `client/workspace`; it has no host filesystem mount or Docker socket.
 
 OpenHands runs as container root with `HOME=/home/openhands` so its settings, session key, and profiles stay in the mounted persistent state volume. The entire WSL filesystem is mounted read/write at `/host`; DAC override capabilities let it access files regardless of their host ownership or mode. Commands run inside the container, and the host Docker socket is not mounted. Process count is limited to 512, and memory/CPU default to 16 GiB / 8 CPUs (`OPENHANDS_MEMORY_LIMIT` and `OPENHANDS_CPU_LIMIT` in `.env`). The owner UI binds to localhost. OpenHands has read/write access to files and credentials in WSL through `/host`, and full-control mode can run commands without per-command approval by default. Start with a bounded task and review changes.
 

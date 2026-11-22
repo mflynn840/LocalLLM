@@ -8,7 +8,7 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY in .env}
       DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD in .env}@litellm-db:5432/litellm
-      LLAMA_API_BASE: ${LLAMA_API_BASE:-http://host.docker.internal:8080/v1}
+      LLAMA_API_BASE: ${LLAMA_API_BASE:-http://llama-server:8080/v1}
       LLAMA_API_KEY: ${LLAMA_API_KEY:-local-no-auth}
     volumes:
       - ./config/litellm.yaml:/app/config.yaml:ro
@@ -105,8 +105,6 @@ services:
     build: ./ingress
     image: local-ai-ingress:latest
     environment:
-      OPENHANDS_LAN_AUTH_USER: ${OPENHANDS_LAN_AUTH_USER:?Set OPENHANDS_LAN_AUTH_USER in .env}
-      OPENHANDS_LAN_AUTH_PASSWORD: ${OPENHANDS_LAN_AUTH_PASSWORD:?Set OPENHANDS_LAN_AUTH_PASSWORD in .env}
       BACKEND_BIND_ADDRESS: ${BACKEND_BIND_ADDRESS:-127.0.0.1}
     command: ["/entrypoint.sh"]
     cap_drop:
@@ -148,6 +146,8 @@ services:
     environment:
       HOME: /home/openhands
       PORT: "8000"
+      OPENHANDS_HOST_HOME: ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}
+      OPENHANDS_WORKSPACE_PATH: ${OPENHANDS_WORKSPACE_PATH:-/projects}
       LLM_MODEL: litellm_proxy/local-model
       LLM_BASE_URL: http://litellm:4000/v1
       LLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
@@ -164,10 +164,13 @@ services:
     volumes:
       - openhands-state:/home/openhands/.openhands
       - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
+      - ${WORKSPACE_DIR:-./workspace}:${OPENHANDS_WORKSPACE_PATH:-/projects}:${OPENHANDS_WORKSPACE_MODE:-rw}
+      - ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
       - /:/host:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
       - ./runtime/openhands-npm-cache:/home/openhands/.npm
       - ./runtime/openhands-npm-global:/home/openhands/.local/npm
       - ./runtime/mcp-packages.json:/home/openhands/.local/mcp-packages.json:ro
+    working_dir: ${OPENHANDS_WORKSPACE_PATH:-/projects}
     read_only: ${OPENHANDS_READ_ONLY_ROOT:-false}
     cap_add:
       - SYS_RESOURCE
@@ -260,9 +263,14 @@ services:
     build:
       context: ./services/file-edit-mcp
     profiles: ["openhands"]
+    environment:
+      OPENHANDS_HOST_HOME: ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}
+      OPENHANDS_WORKSPACE_PATH: ${OPENHANDS_WORKSPACE_PATH:-/projects}
     volumes:
-      - ${WORKSPACE_DIR:-./workspace}:/projects:rw
-      - /:/host:rw
+      - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
+      - ${WORKSPACE_DIR:-./workspace}:${OPENHANDS_WORKSPACE_PATH:-/projects}:${OPENHANDS_WORKSPACE_MODE:-rw}
+      - ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
+      - /:/host:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
     networks:
       - local
     restart: unless-stopped

@@ -18,7 +18,9 @@ from pydantic import BaseModel
 
 MAX_FILE_BYTES = 2_000_000
 MAX_READ_LINES = 300
-ALLOWED_ROOTS = (Path("/projects"), Path("/host"))
+HOST_HOME = Path(os.environ.get("OPENHANDS_HOST_HOME", "/host/home"))
+WORKSPACE_ROOT = Path(os.environ.get("OPENHANDS_WORKSPACE_PATH", "/projects"))
+ALLOWED_ROOTS = (Path("/projects"), Path("/host"), HOST_HOME, WORKSPACE_ROOT)
 
 server = FastMCP("Safe file editing", host="0.0.0.0", port=8000)
 
@@ -117,9 +119,12 @@ def write_atomic(target: Path, data: bytes, mode: int) -> None:
 
 
 def resolve_allowed_path(raw_path: str) -> Path:
-    path = Path(raw_path).expanduser()
+    if raw_path == "~" or raw_path.startswith("~/"):
+        path = HOST_HOME / raw_path[2:] if raw_path != "~" else HOST_HOME
+    else:
+        path = Path(raw_path)
     if not path.is_absolute():
-        path = Path("/projects") / path
+        path = WORKSPACE_ROOT / path
     resolved = path.resolve(strict=False)
     roots = tuple(root.resolve(strict=False) for root in ALLOWED_ROOTS)
     if not any(resolved == root or root in resolved.parents for root in roots):

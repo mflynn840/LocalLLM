@@ -143,7 +143,7 @@ Getting started:
   OpenHands:   http://localhost:${OPENHANDS_PORT:-8000}/canvas
   Open WebUI:  http://localhost:${OPEN_WEBUI_PORT:-3000}
   User signup: ${BACKEND_PUBLIC_URL:-http://localhost:${LITELLM_PORT:-4000}}/register
-  Workspace:   ${WORKSPACE_DIR:-$ROOT/workspace} (mounted into OpenHands as /projects)
+  Workspace:   ${WORKSPACE_DIR:-$ROOT/workspace} (OpenHands working directory; also mounted at /projects)
   Give OpenHands a small task, review its plan and changes, then ask it to test.
 
 Download and switch models:

@@ -151,6 +151,14 @@ except Exception as exc:  # best-effort; do not block stack startup on settings 
 # other user instructions already stored in the default OpenHands settings.
 try:
     guidance = (
+        f"The backend WSL home directory is {os.environ['OPENHANDS_HOST_HOME']}, mounted at that exact path; "
+        f"the project root is {os.environ['OPENHANDS_WORKSPACE_PATH']}, and shell commands start there. "
+        "Use host absolute paths directly in shell commands and file tools. A user path like ~/AI/foo means "
+        f"{os.environ['OPENHANDS_HOST_HOME']}/AI/foo; the container's own ~ is /home/openhands, so do not "
+        "use it for the user's WSL home. Do not search only /home/openhands for host files, and do not prefix "
+        "host paths with /host when their exact path is mounted. Use /host only for paths outside the mounted "
+        "home. Start by checking pwd and the user's specified path, then report paths using the same absolute "
+        "paths the user sees. "
         "For file edits, use the local-file-edit MCP tools. Read the file first to get "
         "line numbers and sha256. For an exact block, use replace_text with the old "
         "text and sha256; it changes the file only when there is exactly one match. "

@@ -45,7 +45,7 @@ placeholders = {
     "WEB_LOADER_API_KEY": {"generate-with-install"},
 }
 for name in (
-    "LITELLM_MASTER_KEY", "LOCAL_BACKEND_API_KEY", "OPENHANDS_LAN_AUTH_PASSWORD",
+    "LITELLM_MASTER_KEY", "LOCAL_BACKEND_API_KEY",
     "LITELLM_DB_PASSWORD", "LITELLM_SALT_KEY", "MODEL_SIGNUP_CODE",
     "WEBUI_ADMIN_PASSWORD", "WEBUI_SECRET_KEY", "SEARXNG_SECRET", "WEB_LOADER_API_KEY",
 ):
@@ -338,7 +338,7 @@ up() {
         fi
     fi
 
-    docker compose --env-file "$ROOT/.env" build ingress model-portal
+    docker compose --env-file "$ROOT/.env" build ingress model-portal file-edit-mcp
     if ! docker compose --env-file "$ROOT/.env" "${profiles[@]}" up -d --wait "${services[@]}"; then
         stop_local_model
         exit 1

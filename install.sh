@@ -122,7 +122,6 @@ values = {
 replacements = {
     "LITELLM_MASTER_KEY": ("sk-local-dev-change-me", "sk-" + secrets.token_urlsafe(32)),
     "LOCAL_BACKEND_API_KEY": ("generate-with-install", secrets.token_urlsafe(32)),
-    "OPENHANDS_LAN_AUTH_PASSWORD": ("generate-with-install", secrets.token_urlsafe(32)),
     "LITELLM_DB_PASSWORD": ("generate-with-install", secrets.token_urlsafe(32)),
     "LITELLM_SALT_KEY": ("generate-with-install", secrets.token_urlsafe(32)),
     "MODEL_SIGNUP_CODE": ("generate-with-install", secrets.token_urlsafe(32)),
@@ -170,6 +169,17 @@ if not workspace_lines:
     lines.append(workspace_prefix + str(project_root))
 elif lines[workspace_lines[-1]].split("=", 1)[1].strip().strip("\"'") == "./workspace":
     lines[workspace_lines[-1]] = workspace_prefix + str(project_root)
+
+for key, value in (
+    ("OPENHANDS_HOST_HOME", str(Path.home())),
+    ("OPENHANDS_WORKSPACE_PATH", str(project_root)),
+):
+    prefix = key + "="
+    matching = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+    if matching:
+        lines[matching[-1]] = prefix + value
+    else:
+        lines.append(prefix + value)
 
 env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 os.chmod(env_file, 0o600)
