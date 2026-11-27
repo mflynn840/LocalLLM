@@ -51,15 +51,41 @@ if ($LASTEXITCODE -ne 0) { throw "Could not get an IP address from WSL '$Distro'
 $wslAddress = ($addressOutput -split '\s+' | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -and $_ -notlike '127.*' } | Select-Object -First 1)
 if (-not $wslAddress) { throw "No WSL IPv4 address found: $addressOutput" }
 
+# This elevated task can attach the shared Jetson USB gadget on demand. The
+# OpenHands and host helpers trigger this task only after a Jetson request.
+try {
+    $usbipd = (Get-Command usbipd.exe -ErrorAction Stop).Source
+    $deviceLine = & $usbipd list | Where-Object { $_ -match '\b0955:7020\b' } | Select-Object -First 1
+    if ($deviceLine -and $deviceLine -match '^\s*(\S+)\s+0955:7020\s+.*\s+(Not shared|Shared|Attached)\s*$') {
+        $busId = $Matches[1]
+        $deviceState = $Matches[2]
+        if ($deviceState -eq 'Not shared') {
+            & $usbipd bind --busid $busId | Out-String | Add-Content -LiteralPath $logPath
+            if ($LASTEXITCODE -ne 0) { throw "usbipd bind failed for $busId." }
+            $deviceState = 'Shared'
+        }
+        if ($deviceState -ne 'Attached') {
+            & $usbipd attach --wsl --busid $busId | Out-String | Add-Content -LiteralPath $logPath
+            if ($LASTEXITCODE -ne 0) { throw "usbipd attach failed for $busId." }
+        }
+        Add-Content -LiteralPath $logPath -Value "Jetson USB device $busId is attached to WSL."
+    } else {
+        Add-Content -LiteralPath $logPath -Value 'Jetson USB device 0955:7020 is not connected; skipping USB attach.'
+    }
+} catch {
+    Add-Content -LiteralPath $logPath -Value "Jetson USB attach check failed: $($_.Exception.Message)"
+}
+
 # Remove the old shared OpenHands LAN exposure. Each visitor now runs their own local agent.
 & netsh.exe interface portproxy delete v4tov4 listenport=8000 listenaddress=0.0.0.0 2>$null | Out-Null
 Get-NetFirewallRule -DisplayName 'OpenHands WSL LAN TCP 8000' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 
-foreach ($port in @(3000, 4000)) {
+foreach ($mapping in @(@{ Listen = 3000; Connect = 3001 }, @{ Listen = 4000; Connect = 4001 })) {
+    $port = $mapping.Listen
     & netsh.exe interface portproxy delete v4tov4 "listenport=$port" listenaddress=0.0.0.0 2>$null | Out-Null
-    & netsh.exe interface portproxy add v4tov4 "listenport=$port" listenaddress=0.0.0.0 "connectport=$port" "connectaddress=$wslAddress"
+    & netsh.exe interface portproxy add v4tov4 "listenport=$port" listenaddress=0.0.0.0 "connectport=$($mapping.Connect)" "connectaddress=$wslAddress"
     if ($LASTEXITCODE -ne 0) { throw "Could not configure Windows-to-WSL TCP $port forwarding." }
-    Add-Content -LiteralPath $logPath -Value "Configured portproxy for TCP $port."
+    Add-Content -LiteralPath $logPath -Value "Configured Windows TCP $port -> WSL TCP $($mapping.Connect)."
 
     $ruleName = "Local AI backend WSL LAN TCP $port"
     & netsh.exe advfirewall firewall delete rule "name=$ruleName" 2>$null | Out-Null
@@ -72,4 +98,4 @@ foreach ($port in @(3000, 4000)) {
     Add-Content -LiteralPath $logPath -Value "Configured LocalSubnet firewall rule for TCP $port."
 }
 
-Write-Output "Backend LAN forwarding is active: Windows TCP 3000 and 4000 -> WSL $wslAddress (LocalSubnet only). OpenHands TCP 8000 is no longer forwarded."
+Write-Output "Backend LAN forwarding is active: Windows TCP 3000/4000 -> WSL TCP 3001/4001 at $wslAddress (LocalSubnet only). OpenHands TCP 8000 is no longer forwarded."

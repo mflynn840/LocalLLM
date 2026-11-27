@@ -38,9 +38,12 @@ def serve(path: str, workspace: str) -> None:
                     conn.sendall(b'{"exit_code":2,"stdout":"","stderr":"command must contain 1-4096 characters"}\n')
                     continue
                 try:
+                    jetson_env = os.environ.copy()
+                    jetson_env["JETSON_TARGET"] = "jetson"
                     result = subprocess.run(
-                        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "jetson", command],
-                        capture_output=True, text=True, errors="replace", timeout=120,
+                        ["/home/michael/AI/jetson/connect_jetson.sh", command],
+                        capture_output=True, text=True, errors="replace", timeout=150,
+                        env=jetson_env,
                     )
                     response = {
                         "exit_code": result.returncode,
@@ -52,7 +55,7 @@ def serve(path: str, workspace: str) -> None:
                         "exit_code": 124,
                         "stdout": (error.stdout or b"").decode(errors="replace")[:65536]
                             if isinstance(error.stdout, bytes) else (error.stdout or "")[:65536],
-                        "stderr": "Jetson SSH command timed out after 120 seconds.",
+                        "stderr": "Jetson preparation or SSH command timed out after 150 seconds.",
                     }
                 conn.sendall((json.dumps(response) + "\n").encode())
                 continue
@@ -68,7 +71,14 @@ def serve(path: str, workspace: str) -> None:
             pid, master = pty.fork()
             if pid == 0:
                 os.chdir(cwd)
-                os.execvpe("/bin/bash", ["/bin/bash", "--login", "-i"], os.environ.copy())
+                shell_env = os.environ.copy()
+                client_env = request.get("env") or {}
+                if isinstance(client_env, dict):
+                    for key in ("PS1", "PS2", "TERM"):
+                        value = client_env.get(key)
+                        if isinstance(value, str) and len(value) <= 512:
+                            shell_env[key] = value
+                os.execvpe("/bin/bash", ["/bin/bash", "--login", "-i"], shell_env)
             child_status = None
             disconnected = False
             try:
@@ -80,7 +90,10 @@ def serve(path: str, workspace: str) -> None:
                             disconnected = source is conn
                             break
                         if source is conn:
-                            os.write(master, data)
+                            # OpenHands' subprocess terminal sends Enter as CR.
+                            # Forward it as a canonical line break to the host
+                            # PTY so commands submitted through this bridge run.
+                            os.write(master, data.replace(b"\r", b"\n"))
                         else:
                             conn.sendall(data)
                     waited, child_status = os.waitpid(pid, os.WNOHANG)
@@ -108,15 +121,23 @@ def serve(path: str, workspace: str) -> None:
 
 
 def client(path: str) -> None:
-    import shutil
     import tty
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(path)
-    sock.sendall((json.dumps({"cwd": os.getcwd()}) + "\n").encode())
     old = termios.tcgetattr(sys.stdin.fileno()) if sys.stdin.isatty() else None
     try:
         if old:
-            tty.setraw(sys.stdin.fileno())
+            tty.setraw(sys.stdin.fileno(), when=termios.TCSANOW)
+        # Set raw mode before announcing the connection. TerminalExecutor may
+        # write its initial shell handshake as soon as Popen returns; setting
+        # raw mode afterwards uses TCSAFLUSH and can discard that first input.
+        sock.connect(path)
+        sock.sendall((json.dumps({
+            "cwd": os.getcwd(),
+            # TerminalExecutor launches this client with its prompt marker in PS1.
+            # Relay the harmless terminal settings so the host shell passes its
+            # readiness handshake and subsequent command-boundary detection.
+            "env": {key: os.environ.get(key, "") for key in ("PS1", "PS2", "TERM")},
+        }) + "\n").encode())
         while True:
             readable, _, _ = select.select([sock, sys.stdin], [], [])
             if sock in readable:

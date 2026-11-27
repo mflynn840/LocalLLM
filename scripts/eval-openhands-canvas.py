@@ -21,10 +21,10 @@ CASES = CASE_SUITE["CASES"]
 match_answer = CASE_SUITE["match_answer"]
 
 
-def request(path, method="GET", data=None, extra_headers=None):
+def request(path, method="GET", data=None, extra_headers=None, canvas_proxy=False):
     body = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(
-        f"http://127.0.0.1:18000/api{path}", data=body, method=method,
+        f"http://127.0.0.1:{'8000/api' if canvas_proxy else '18000/api'}{path}", data=body, method=method,
         headers={"X-Session-API-Key": KEY, "Content-Type": "application/json", **(extra_headers or {})},
     )
     try:
@@ -34,7 +34,7 @@ def request(path, method="GET", data=None, extra_headers=None):
         raise RuntimeError(f"Canvas {method} {path}: HTTP {exc.code}") from exc
 
 
-def chat(question, tags=None):
+def chat(question, tags=None, wsl_mode=False, timeout_seconds=95):
     settings = request("/settings", extra_headers={"X-Expose-Secrets": "encrypted"})
     payload = {
         "agent_settings": settings["agent_settings"],
@@ -45,14 +45,16 @@ def chat(question, tags=None):
         "tags": tags or {"purpose": "local-repo-verification"},
         "initial_message": {"role": "user", "content": [{"type": "text", "text": question}]},
     }
-    if payload["tags"].get("localterminal") == "wsl":
-        payload.update({"worktree": False, "worktree_options": None, "conversation_runtime": "local"})
-    conversation = request("/conversations", "POST", payload)
+    conversation = request(
+        "/conversations", "POST", payload,
+        extra_headers={"Cookie": "openhands_terminal=wsl"} if wsl_mode else None,
+        canvas_proxy=wsl_mode,
+    )
     path = "/conversations/" + conversation["id"]
     try:
         assert Path(conversation["workspace"]["working_dir"]) == ROOT
         start = time.monotonic()
-        while time.monotonic() - start < 95:
+        while time.monotonic() - start < timeout_seconds:
             status = request(path)["execution_status"]
             if status in {"finished", "error", "stuck", "paused", "waiting_for_confirmation"}:
                 break
@@ -72,10 +74,7 @@ def chat(question, tags=None):
         return {"status": status, "answer": response or "", "actions": actions,
                 "observations": observations, "seconds": round(time.monotonic() - start, 2)}
     finally:
-        if os.environ.get("EVAL_KEEP_CONVERSATION") == "1":
-            print(f"KEPT_CONVERSATION {conversation['id']}", flush=True)
-        else:
-            request(path, "DELETE")
+        request(path, "DELETE")
 
 
 def summarize(name, result, passed):
@@ -180,17 +179,22 @@ def main():
             raise RuntimeError("wsl-files requires a host fixture path, token, and WSL username.")
         result = chat(
             f"In My PC (WSL) mode, read the temporary file at {sample}, which is outside this project. "
-            "Do not change it. Report the exact TOKEN value, the username from whoami, and the working "
+            "Do not change it. Report the exact file path, TOKEN value, username from whoami, and working "
             "directory from pwd. Use the terminal for the WSL file.",
-            tags={"purpose": "wsl-file-access-evaluation", "localterminal": "wsl"},
+            tags={"purpose": "wsl-file-access-evaluation"}, wsl_mode=True, timeout_seconds=240,
         )
         terminal_actions = [event for event in result["actions"] if event.get("tool_name") == "terminal"]
-        terminal_evidence = json.dumps([
+        terminal_observations = [
             event for event in result["observations"] if event.get("tool_name") == "terminal"
-        ])
+        ]
+        terminal_evidence = json.dumps(terminal_observations)
         passed = (
             result["status"] == "finished"
             and bool(terminal_actions)
+            and bool(terminal_observations)
+            and all(event.get("observation", {}).get("exit_code") == 0
+                    and not event.get("observation", {}).get("is_error", False)
+                    for event in terminal_observations)
             and sample in terminal_evidence
             and token in terminal_evidence
             and expected_user in terminal_evidence

@@ -68,7 +68,7 @@ The backend shares its model gateway and Open WebUI. Each person runs a separate
    powershell.exe -ExecutionPolicy Bypass -File scripts/backend-lan.ps1
    ```
 
-   This forwards TCP 3000 and 4000. It removes the old OpenHands TCP 8000 forwarding. Rerun after WSL restarts because its NAT IP can change.
+   This forwards Windows TCP 3000 and 4000 to WSL TCP 3001 and 4001, avoiding conflicts with Docker Desktop's published ports. It removes the old OpenHands TCP 8000 forwarding. Rerun after WSL restarts because its NAT IP can change.
    To start backend mode and refresh forwarding automatically at Windows sign-in, install the scheduled task once:
 
    ```powershell
@@ -86,6 +86,19 @@ Backend owner OpenHands uses `LITELLM_MASTER_KEY` internally. Client instances u
 OpenCode has automatic compaction enabled in [config/opencode.json](./config/opencode.json). It starts compacting with a 15% context buffer (at least 16,000 tokens), so with a 100,000-token context it begins at about 84,000 tokens. The compacted conversation keeps roughly the latest 15,000 tokens alongside its summary. Compaction uses the selected local model through LiteLLM.
 
 OpenHands provisions a selectable **Finish-and-Verify** agent profile in Settings > Agent. Use it for coding tasks when you want the agent to continue through implementation, a relevant smoke or dry run, unit tests, and a final review of every changed file. It does not replace or activate over your current profile. Startup refreshes its instructions while preserving the default profile's model and tool configuration.
+
+### Supervised agent runs
+
+The optional `agent-orchestrator` service runs a small planner and read-only reviewer around the selected OpenHands worker. It stores task plans and review decisions in `runtime/orchestration/`. The planner and reviewer use `ORCHESTRATOR_MODEL` through the local LiteLLM gateway (default `local-model`); the worker uses your selected OpenHands agent profile. Reviews run at step boundaries, and a revision is limited to a short follow-up instruction. The default cap is three review calls for the task.
+
+Start the backend, then run a task from the project root:
+
+```sh
+docker compose --profile openhands run --rm agent-orchestrator \
+  "Inspect and fix the retry behavior in the model queue" --mode docker
+```
+
+For a worker that needs your WSL user, shell, or files outside the mounted project, use `--mode wsl`. This needs the stack's `full-control` sandbox and the active OpenHands profile must include a terminal. Planner and reviewer stay inside the container network; only the worker gets WSL terminal access. Task JSON records are local runtime state and can be removed when no longer needed.
 
 ## Use the coding agent
 

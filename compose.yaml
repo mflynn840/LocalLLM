@@ -33,6 +33,27 @@ services:
       - local
     restart: unless-stopped
 
+  agent-orchestrator:
+    build: ./services/agent-orchestrator
+    profiles: ["openhands"]
+    environment:
+      OPENHANDS_API_URL: http://openhands:8000/api
+      OPENHANDS_API_KEY: ${LOCAL_BACKEND_API_KEY:?Set LOCAL_BACKEND_API_KEY in .env}
+      LITELLM_API_URL: http://openhands-llm-gateway:4000/v1
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
+      ORCHESTRATOR_MODEL: ${ORCHESTRATOR_MODEL:-local-model}
+      WORKSPACE_PATH: ${OPENHANDS_WORKSPACE_PATH:-/projects}
+      STATE_DIR: /state
+    volumes:
+      - ./runtime/orchestration:/state
+      - ${WORKSPACE_DIR:-./workspace}:${OPENHANDS_WORKSPACE_PATH:-/projects}:${OPENHANDS_WORKSPACE_MODE:-rw}
+    networks: [local]
+    depends_on:
+      openhands:
+        condition: service_started
+      openhands-llm-gateway:
+        condition: service_started
+
   litellm-db:
     image: postgres:16-alpine
     environment:
