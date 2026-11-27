@@ -1,8 +1,10 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { request } from "node:http";
+import { join } from "node:path";
 import { URL } from "node:url";
 
 const catalogPath = process.env.OPENHANDS_MODEL_CATALOG_PATH || "/opt/local-models/models.tsv";
+const modelsRoot = process.env.OPENHANDS_MODELS_ROOT || "/models";
 const serverUrl = process.env.OPENHANDS_MODEL_SERVER_URL || "http://llama-server:8080";
 const sessionKey = process.env.LOCAL_BACKEND_API_KEY || "";
 const contextLimit = Number.parseInt(process.env.OPENHANDS_MODEL_CONTEXT_MAX || "8192", 10);
@@ -46,32 +48,68 @@ function jsonRequest(path, method = "GET", payload = undefined) {
 async function readCatalog() {
   const text = await readFile(catalogPath, "utf8");
   return text.split(/\r?\n/).filter((line) => line && !line.startsWith("#")).map((line) => {
-    const [alias, label, repo, folder, quant] = line.split("|");
-    return { alias, label, repo, folder, quant };
+    const [alias, label, repo, folder, quant, quantList = ""] = line.split("|");
+    return { alias, label, repo, folder, quant, quantizations: quantList ? quantList.split(",") : [quant] };
   });
 }
 
-function variantId(alias, context) {
-  return `openhands-${alias}-ctx${context}`;
+function quantVariantId(alias, quant, context) {
+  return `openhands-${alias}-q${quant}-ctx${context}`;
+}
+
+async function listGgufFiles(directory, prefix = "") {
+  const files = [];
+  try {
+    for (const item of await readdir(directory, { withFileTypes: true })) {
+      const relative = join(prefix, item.name);
+      if (item.isDirectory()) files.push(...await listGgufFiles(join(directory, item.name), relative));
+      else if (item.isFile() && item.name.toLowerCase().endsWith(".gguf") && !item.name.startsWith("mmproj-")) files.push(relative);
+    }
+  } catch { /* model directory is absent */ }
+  return files;
+}
+
+function fileMatchesQuant(file, quant) {
+  const name = file.toLowerCase();
+  const index = name.indexOf(quant.toLowerCase());
+  if (index < 0) return false;
+  return quant.toUpperCase().startsWith("UD-") || name.slice(Math.max(0, index - 3), index) !== "ud-";
 }
 
 async function listModels(res) {
   try {
     const [catalog, server] = await Promise.all([
-      readCatalog(), jsonRequest("/models?reload=1"),
+      readCatalog(), jsonRequest("/models"),
     ]);
     if (server.status >= 400) throw new Error(server.data?.error?.message || `Model router returned ${server.status}`);
     const rows = server.data?.data || [];
     const models = await Promise.all(catalog.map(async (entry) => {
-      const id = variantId(entry.alias, contextSteps.includes(8192) ? 8192 : contextSteps.at(-1));
-      const serverModel = rows.find((row) => row.id === id);
-      const statusValue = serverModel?.status?.value || "not_downloaded";
-      let downloaded = ["loaded", "sleeping"].includes(statusValue);
-      if (serverModel?.path && !["incomplete", "downloading", "loading"].includes(statusValue)) {
-        try { await access(serverModel.path); downloaded = true; } catch { /* missing HF cache */ }
-      }
-      const status = statusValue || (downloaded ? "unloaded" : "not_downloaded");
-      return { ...entry, downloaded, status, progress: serverModel?.status?.progress || null, default_model_id: id };
+      const context = contextSteps.includes(8192) ? 8192 : contextSteps.at(-1);
+      const files = await listGgufFiles(join(modelsRoot, entry.folder));
+      const quantizations = await Promise.all(entry.quantizations.map(async (quant) => {
+        const id = quantVariantId(entry.alias, quant, context);
+        const serverModel = rows.find((row) => row.id === id);
+        const statusValue = serverModel?.status?.value || "not_downloaded";
+        let downloaded = ["loaded", "sleeping"].includes(statusValue)
+          || files.some((name) => fileMatchesQuant(name, quant));
+        if (!downloaded && serverModel?.path && !["incomplete", "downloading", "loading"].includes(statusValue)) {
+          try { await access(serverModel.path); downloaded = true; } catch { /* missing HF cache */ }
+        }
+        return {
+          quant, downloaded,
+          status: downloaded && statusValue === "not_downloaded" ? "unloaded" : statusValue,
+          progress: serverModel?.status?.progress || null,
+          model_id: id,
+        };
+      }));
+      const defaultQuant = quantizations.find((item) => item.quant === entry.quant) || quantizations[0];
+      return {
+        ...entry, quantizations,
+        downloaded: defaultQuant?.downloaded || false,
+        status: defaultQuant?.status || "not_downloaded",
+        progress: defaultQuant?.progress || null,
+        default_model_id: defaultQuant?.model_id || quantVariantId(entry.alias, entry.quant, context),
+      };
     }));
     sendJson(res, 200, { models, context_limit: contextLimit, contexts: contextSteps, default_alias: defaultAlias });
   } catch (error) {
@@ -121,13 +159,14 @@ export function handleModelManager(req, res, path) {
         const payload = JSON.parse(body || "{}");
         const catalog = await readCatalog();
         const entry = catalog.find((item) => item.alias === payload.alias);
+        const quant = typeof payload.quant === "string" ? payload.quant : entry?.quant;
         const context = Number(payload.context);
-        if (!entry || !Number.isInteger(context) || !contextSteps.includes(context)) {
+        if (!entry || !entry.quantizations.includes(quant) || !Number.isInteger(context) || !contextSteps.includes(context)) {
           sendJson(res, 400, { detail: "Unknown model or unsupported context size." });
           return;
         }
         const result = await jsonRequest("/models", "POST", {
-          model: variantId(entry.alias, context),
+          model: quantVariantId(entry.alias, quant, context),
         });
         sendJson(res, result.status, result.data);
       } catch (error) {
@@ -139,7 +178,7 @@ export function handleModelManager(req, res, path) {
   if (req.method === "GET" && path === "/local-models/properties") {
     const url = new URL(req.url || "/", "http://localhost");
     const model = url.searchParams.get("model") || "";
-    if (!/^openhands-[a-zA-Z0-9._-]+-ctx\d+$/.test(model)) {
+    if (!/^openhands-[a-zA-Z0-9._-]+(?:-q[a-zA-Z0-9._-]+)?-ctx\d+$/.test(model)) {
       sendJson(res, 400, { detail: "Invalid model selection." });
       return true;
     }

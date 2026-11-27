@@ -41,28 +41,46 @@
 .local-execution-menu [role=status] { margin-top: 8px; color: #d4d4d8; font-size: 12px; }
 
 .local-model-picker {
-  position: fixed;
+  position: relative;
+  display: inline-flex;
   z-index: 70;
-  right: 1rem;
-  bottom: 4.4rem;
+  color: #f4f4f5;
+  font: 500 13px/1.4 system-ui, sans-serif;
+}
+.local-context-picker {
+  position: relative;
+  display: inline-flex;
+  z-index: 70;
   color: #f4f4f5;
   font: 500 13px/1.4 system-ui, sans-serif;
 }
 .local-model-picker summary,
-.local-model-menu {
+.local-model-menu,
+.local-context-picker summary,
+.local-context-menu {
   border: 1px solid #52525b;
   border-radius: 10px;
   background: #27272a;
   box-shadow: 0 4px 20px #0004;
 }
-.local-model-picker summary { cursor: pointer; padding: 8px 12px; }
+.local-model-picker summary,
+.local-context-picker summary { cursor: pointer; padding: 6px 10px; }
+.local-model-picker summary::-webkit-details-marker,
+.local-context-picker summary::-webkit-details-marker { display: none; }
 .local-model-menu {
   position: absolute;
-  right: 0;
+  left: 0;
   bottom: calc(100% + 8px);
   width: min(360px, calc(100vw - 2rem));
   max-height: min(70vh, 640px);
   overflow-y: auto;
+  padding: 12px;
+}
+.local-context-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: min(230px, calc(100vw - 2rem));
   padding: 12px;
 }
 .local-model-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
@@ -77,10 +95,26 @@
   padding: 6px 8px;
 }
 .local-model-list { display: grid; gap: 5px; max-height: 34vh; overflow-y: auto; margin-bottom: 10px; }
-.local-model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+.local-model-family,
+.local-model-row { display: grid; gap: 4px; }
+.local-model-family { border: 1px solid #3f3f46; border-radius: 7px; padding: 5px; background: #202023; }
+.local-model-family > summary,
+.local-model-row > summary { grid-column: 1 / -1; cursor: pointer; list-style: none; }
+.local-model-family > summary { font-weight: 600; padding: 5px 3px; }
+.local-model-family > summary::-webkit-details-marker,
+.local-model-row > summary::-webkit-details-marker { display: none; }
+.local-model-family > summary::before,
+.local-model-row > summary::before { content: "▸ "; color: #a1a1aa; }
+.local-model-family[open] > summary::before,
+.local-model-row[open] > summary::before { content: "▾ "; }
+.local-model-family > .local-model-row { margin: 0 2px 4px 10px; padding: 5px; border-left: 1px solid #52525b; }
+.local-model-family summary.is-ready { color: #f4f4f5; }
+.local-model-family summary:not(.is-ready) { color: #a1a1aa; }
+.local-model-quant-row { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
 .local-model-choice { text-align: left; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-model-quant-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; padding-left: 14px; }
 .local-model-choice[aria-pressed="true"] { border-color: #93c5fd; }
-.local-model-row.is-missing .local-model-choice { color: #a1a1aa; border-color: #3f3f46; cursor: default; }
+.local-model-choice:disabled { color: #8b8b91; border-color: #3f3f46; background: #202023; cursor: default; }
 .local-model-download { cursor: pointer; min-width: 76px; }
 .local-model-download:disabled { opacity: .55; cursor: default; }
 .local-model-row progress,
@@ -88,9 +122,17 @@
 .local-model-menu label { display: grid; gap: 4px; margin-top: 8px; }
 .local-model-menu select { width: 100%; }
 .local-model-menu select:disabled { opacity: .6; }
+.local-context-menu label { display: grid; gap: 4px; }
+.local-context-menu select {
+  width: 100%;
+  border: 1px solid #52525b;
+  border-radius: 6px;
+  background: #18181b;
+  color: #f4f4f5;
+  padding: 6px 8px;
+}
 .local-model-help,
 .local-model-menu [role=status] { color: #d4d4d8; font-size: 12px; margin: 8px 0 0; }
 @media (max-width: 600px) {
-  .local-model-picker { right: .5rem; bottom: 4.2rem; }
   .local-model-menu { width: min(360px, calc(100vw - 1rem)); }
 }

@@ -21,11 +21,11 @@ EOF
 
 catalog_entry() {
     local wanted="$1"
-    local alias label repo folder default_quant
-    while IFS='|' read -r alias label repo folder default_quant; do
+    local alias label repo folder default_quant quantizations
+    while IFS='|' read -r alias label repo folder default_quant quantizations; do
         [[ -z "$alias" || "$alias" == \#* ]] && continue
         if [[ "$alias" == "$wanted" ]]; then
-            printf '%s|%s|%s|%s\n' "$label" "$repo" "$folder" "$default_quant"
+            printf '%s|%s|%s|%s|%s\n' "$label" "$repo" "$folder" "$default_quant" "${quantizations:-$default_quant}"
             return 0
         fi
     done < "$CATALOG"
@@ -38,6 +38,16 @@ valid_alias() {
 
 quant_pattern() {
     printf '*%s*.gguf\n' "$1"
+}
+
+matching_quant_files() {
+    local dir="$1" quant="$2" file name
+    find "$dir" -type f -iname "*${quant}*.gguf" -print 2>/dev/null | while IFS= read -r file; do
+        name="$(basename "$file")"
+        if [[ "$quant" == UD-* || "${name,,}" != *"ud-${quant,,}"* ]]; then
+            printf '%s\n' "$file"
+        fi
+    done
 }
 
 find_model_file() {
@@ -61,7 +71,7 @@ find_model_file() {
     }
 
     if [[ -n "$quant" ]]; then
-        candidate="$(find "$dir" -type f -name "*${quant}*.gguf" -print | LC_ALL=C sort | sed -n '1p')"
+        candidate="$(matching_quant_files "$dir" "$quant" | LC_ALL=C sort | sed -n '1p')"
     else
         candidate="$(find "$dir" -type f -name '*.gguf' -print | LC_ALL=C sort | sed -n '1p')"
     fi
@@ -72,12 +82,12 @@ find_model_file() {
     fi
 
     local first_shard
-    first_shard="$(find "$dir" -type f -name "*${quant}*00001-of-*.gguf" -print | LC_ALL=C sort | sed -n '1p')"
+    first_shard="$(matching_quant_files "$dir" "$quant" | grep -E '00001-of-.*\.gguf$' | LC_ALL=C sort | sed -n '1p')"
     if [[ -n "$first_shard" ]]; then
         candidate="$first_shard"
     elif [[ -n "$quant" ]]; then
         local matches
-        matches="$(find "$dir" -type f -name "*${quant}*.gguf" -print | wc -l | tr -d ' ')"
+        matches="$(matching_quant_files "$dir" "$quant" | wc -l | tr -d ' ')"
         if [[ "$matches" -gt 1 ]]; then
             echo "Multiple GGUF files match '$quant'; pass a more specific quantization." >&2
             return 1
@@ -88,15 +98,15 @@ find_model_file() {
 }
 
 list_models() {
-    local alias label repo folder default_quant installed
-    printf '%-26s %-31s %-12s %s\n' "ALIAS" "MODEL" "DEFAULT QUANT" "STATUS"
-    while IFS='|' read -r alias label repo folder default_quant; do
+    local alias label repo folder default_quant quantizations installed
+    printf '%-26s %-31s %-12s %-15s %s\n' "ALIAS" "MODEL" "DEFAULT QUANT" "STATUS" "AVAILABLE QUANTS"
+    while IFS='|' read -r alias label repo folder default_quant quantizations; do
         [[ -z "$alias" || "$alias" == \#* ]] && continue
         installed="not downloaded"
-        if find "$MODEL_ROOT/$folder" -type f -name '*.gguf' -print -quit 2>/dev/null | grep -q .; then
+        if find_model_file "$alias" "$default_quant" >/dev/null 2>&1; then
             installed="downloaded"
         fi
-        printf '%-26s %-31s %-12s %s\n' "$alias" "$label" "$default_quant" "$installed"
+        printf '%-26s %-31s %-12s %-15s %s\n' "$alias" "$label" "$default_quant" "$installed" "${quantizations:-$default_quant}"
     done < "$CATALOG"
 }
 
@@ -144,7 +154,7 @@ download_repo() {
 }
 
 download_catalog_model() {
-    local spec="$1" fallback_quant="$2" alias quant entry label repo folder default_quant pattern
+    local spec="$1" fallback_quant="$2" alias quant entry label repo folder default_quant quantizations pattern
     alias="${spec%%:*}"
     if [[ "$spec" == *:* ]]; then
         quant="${spec#*:}"
@@ -156,12 +166,16 @@ download_catalog_model() {
         echo "Use 'scripts/models.sh list' to see supported aliases, or use --repo/--name/--include." >&2
         return 2
     fi
-    IFS='|' read -r label repo folder default_quant <<< "$entry"
+    IFS='|' read -r label repo folder default_quant quantizations <<< "$entry"
     quant="${quant:-$default_quant}"
     [[ "$quant" =~ ^[a-zA-Z0-9._-]+$ ]] || {
         echo "Invalid quantization: $quant" >&2
         return 2
     }
+    if [[ -n "$quantizations" && ",$quantizations," != *",$quant,"* ]]; then
+        echo "Quantization '$quant' is not listed for $alias. Available: $quantizations" >&2
+        return 2
+    fi
     pattern="$(quant_pattern "$quant")"
     download_repo "$repo" "$folder" "$pattern" "$quant"
 }

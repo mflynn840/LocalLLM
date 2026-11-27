@@ -3,13 +3,50 @@
 import json
 import os
 import pty
+import posixpath
 import select
+import shlex
 import socket
 import subprocess
 import sys
 import termios
 import signal
 import time
+
+
+MAX_JETSON_FILE_BYTES = 2_000_000
+MAX_REQUEST_BYTES = MAX_JETSON_FILE_BYTES * 2 + 16_384
+JETSON_PROJECT_ROOT = "/home/michael/Code/task1"
+
+
+def handle_jetson_file_write(request: dict) -> dict:
+    path = request.get("path")
+    content = request.get("content")
+    if not isinstance(path, str) or not isinstance(content, str):
+        return {"exit_code": 2, "stdout": "", "stderr": "path and content must be strings"}
+    normalized = posixpath.normpath(path)
+    if normalized != path or not path.startswith(JETSON_PROJECT_ROOT + "/"):
+        return {"exit_code": 2, "stdout": "", "stderr": "path must be a normalized file path inside /home/michael/Code/task1"}
+    if any(part in ("", ".", "..") for part in path[len(JETSON_PROJECT_ROOT) + 1:].split("/")):
+        return {"exit_code": 2, "stdout": "", "stderr": "path must identify a file inside task1"}
+    data = content.encode("utf-8")
+    if len(data) > MAX_JETSON_FILE_BYTES:
+        return {"exit_code": 2, "stdout": "", "stderr": f"content exceeds {MAX_JETSON_FILE_BYTES} bytes"}
+    parent = posixpath.dirname(path)
+    command = f"umask 022; mkdir -p -- {shlex.quote(parent)} && cat > {shlex.quote(path)}"
+    try:
+        result = subprocess.run(
+            ["/home/michael/AI/jetson/connect_jetson.sh", command],
+            input=data, capture_output=True, timeout=150,
+            env={**os.environ, "JETSON_TARGET": "jetson"},
+        )
+    except subprocess.TimeoutExpired:
+        return {"exit_code": 124, "stdout": "", "stderr": "Jetson file transfer timed out after 150 seconds."}
+    return {
+        "exit_code": result.returncode,
+        "stdout": result.stdout.decode(errors="replace")[:65536],
+        "stderr": result.stderr.decode(errors="replace")[:65536],
+    }
 
 
 def serve(path: str, workspace: str) -> None:
@@ -25,12 +62,15 @@ def serve(path: str, workspace: str) -> None:
     while True:
         conn, _ = server.accept()
         try:
-            header = b""
-            while not header.endswith(b"\n") and len(header) < 8192:
-                chunk = conn.recv(1)
+            header = bytearray()
+            while not header.endswith(b"\n") and len(header) <= MAX_REQUEST_BYTES:
+                chunk = conn.recv(min(4096, MAX_REQUEST_BYTES + 1 - len(header)))
                 if not chunk:
                     break
-                header += chunk
+                header.extend(chunk)
+            if len(header) > MAX_REQUEST_BYTES or not header.endswith(b"\n"):
+                conn.sendall(b'{"exit_code":2,"stdout":"","stderr":"request too large or missing newline"}\n')
+                continue
             request = json.loads(header)
             if request.get("operation") == "jetson_exec":
                 command = request.get("command")
@@ -57,6 +97,10 @@ def serve(path: str, workspace: str) -> None:
                             if isinstance(error.stdout, bytes) else (error.stdout or "")[:65536],
                         "stderr": "Jetson preparation or SSH command timed out after 150 seconds.",
                     }
+                conn.sendall((json.dumps(response) + "\n").encode())
+                continue
+            if request.get("operation") == "jetson_write_file":
+                response = handle_jetson_file_write(request)
                 conn.sendall((json.dumps(response) + "\n").encode())
                 continue
             requested_cwd = request.get("cwd") or workspace

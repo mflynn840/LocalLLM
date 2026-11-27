@@ -96,7 +96,7 @@ export function parseArgs(argv = process.argv.slice(2), env = process.env) {
     noReferrerPrefixes: [],
     sessionApiKey: null,
     authRequired: false,
-    allowLanSessionKey: false,
+    allowLanSessionKey: isEnvFlagEnabled(env.AGENT_CANVAS_ALLOW_LAN_SESSION_KEY),
     runtimeServicesInfo: null,
     lockToCloud: null,
     basePath: "/",

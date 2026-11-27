@@ -1,14 +1,25 @@
-# alias|label|huggingface repository|model directory|default quantization
-qwen3.8-27b|Qwen3.8-27B|unsloth/Qwen3.8-27B-GGUF|qwen3.8-27b|Q4_0
-qwen3-coder-30b-a3b|Qwen3-Coder-30B-A3B|unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF|qwen3-coder|Q3_K_M
-gpt-oss-20b|gpt-oss-20b|unsloth/gpt-oss-20b-GGUF|gpt-oss-20b|Q4_K_M
-qwen3.5-9b|Qwen3.5-9B|unsloth/Qwen3.5-9B-GGUF|qwen3.5-9b|Q4_K_M
-gemma-4-12b|Gemma-4-12B|unsloth/gemma-4-12b-it-GGUF|gemma-4-12b|Q4_K_M
-r1-distill-qwen-14b|DeepSeek-R1-Distill-Qwen-14B|unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF|r1-distill-qwen-14b|Q4_K_M
-r1-distill-qwen-32b|DeepSeek-R1-Distill-Qwen-32B|bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF|r1-distill-qwen-32b|Q4_K_M
-qwen3-coder-next|Qwen3-Coder-Next|unsloth/Qwen3-Coder-Next-GGUF|qwen3-coder-next|Q5_K_M
-gpt-oss-120b|gpt-oss-120b|unsloth/gpt-oss-120b-GGUF|gpt-oss-120b|MXFP4
-qwen3.5-122b-a10b|Qwen3.5-122B-A10B|unsloth/Qwen3.5-122B-A10B-GGUF|qwen3.5-122b-a10b|Q4_K_M
-glm-5.3-flash|GLM-5.3-Flash|unsloth/GLM-5.3-Flash-GGUF|glm-5.3-flash|UD-Q4_K_XL
-deepseek-v4-flash|DeepSeek-V4.1-Flash|ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF|deepseek-v4-flash|IQ1_M
-r1-distill-llama-70b|DeepSeek-R1-Distill-Llama-70B|unsloth/DeepSeek-R1-Distill-Llama-70B-GGUF|r1-distill-llama-70b|Q4_K_M
+# alias|label|huggingface repository|model directory|default quantization|available quantizations
+qwen3.8-27b|Qwen3.8-27B|unsloth/Qwen3.8-27B-GGUF|qwen3.8-27b|Q4_0|Q4_0,BF16,Q4_1,Q8_0,UD-IQ1_M,UD-IQ1_S,UD-IQ2_S,UD-IQ2_XS,UD-IQ2_XXS,UD-IQ3_S,UD-IQ3_XXS,UD-IQ4_XS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_M,UD-Q4_K_S,UD-Q4_K_XL,UD-Q5_K_M,UD-Q5_K_S,UD-Q5_K_XL,UD-Q6_K,UD-Q6_K_L,UD-Q6_K_M,UD-Q6_K_XL,UD-Q8_K_L,UD-Q8_K_XL
+qwen3-coder-30b-a3b|Qwen3-Coder-30B-A3B|unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF|qwen3-coder|Q3_K_M|Q3_K_M,BF16,IQ4_NL,IQ4_XS,Q1_0,Q2_K,Q2_K_L,Q3_K_S,Q4_0,Q4_1,Q4_K_M,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-IQ1_M,UD-IQ1_S,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_XXS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_XL,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+gpt-oss-20b|gpt-oss-20b|unsloth/gpt-oss-20b-GGUF|gpt-oss-20b|Q4_K_M|Q4_K_M,F16,Q2_K,Q2_K_L,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-Q4_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+qwen3.5-9b|Qwen3.5-9B|unsloth/Qwen3.5-9B-GGUF|qwen3.5-9b|Q4_K_M|Q4_K_M,BF16,IQ4_NL,IQ4_XS,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_XXS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_XL,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+gemma-4-12b|Gemma-4-12B|unsloth/gemma-4-12b-it-GGUF|gemma-4-12b|Q4_K_M|Q4_K_M,BF16,F16,IQ4_NL,IQ4_XS,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-IQ2_M,UD-IQ3_XXS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_XL,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+r1-distill-qwen-14b|DeepSeek-R1-Distill-Qwen-14B|unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF|r1-distill-qwen-14b|Q4_K_M|Q4_K_M,F16,Q2_K,Q2_K_L,Q3_K_M,Q5_K_M,Q6_K,Q8_0
+r1-distill-qwen-32b|DeepSeek-R1-Distill-Qwen-32B|bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF|r1-distill-qwen-32b|Q4_K_M|Q4_K_M,bf16,IQ2_M,IQ2_S,IQ2_XS,IQ2_XXS,IQ3_M,IQ3_XS,IQ4_NL,IQ4_XS,Q2_K,Q2_K_L,Q3_K_L,Q3_K_M,Q3_K_S,Q3_K_XL,Q4_0,Q4_1,Q4_K_L,Q4_K_S,Q5_K_L,Q5_K_M,Q5_K_S,Q6_K,Q6_K_L,Q8_0
+qwen3-coder-next|Qwen3-Coder-Next|unsloth/Qwen3-Coder-Next-GGUF|qwen3-coder-next|Q5_K_M|Q5_K_M,BF16,IQ4_NL,IQ4_XS,MXFP4,Q1_0,Q2_K,Q2_K_L,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_M,Q4_K_S,Q5_K_S,Q6_K,Q8_0,UD-IQ1_M,UD-IQ1_S,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_S,UD-IQ3_XXS,UD-IQ4_NL,UD-IQ4_XS,UD-Q2_K_XL,UD-Q3_K_M,UD-Q3_K_S,UD-Q3_K_XL,UD-Q4_K_M,UD-Q4_K_S,UD-Q4_K_XL,UD-Q5_K_M,UD-Q5_K_S,UD-Q5_K_XL,UD-Q6_K,UD-Q6_K_XL,UD-Q8_K_XL
+gpt-oss-120b|gpt-oss-120b|unsloth/gpt-oss-120b-GGUF|gpt-oss-120b|MXFP4|MXFP4,F16,Q2_K,Q2_K_L,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_M,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-Q4_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+qwen3.5-122b-a10b|Qwen3.5-122B-A10B|unsloth/Qwen3.5-122B-A10B-GGUF|qwen3.5-122b-a10b|Q4_K_M|Q4_K_M,BF16,MXFP4,Q3_K_M,Q3_K_S,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-IQ1_M,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_S,UD-IQ3_XXS,UD-IQ4_NL,UD-IQ4_XS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_XL,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+glm-5.3-flash|GLM-5.3-Flash|unsloth/GLM-5.3-Flash-GGUF|glm-5.3-flash|UD-Q4_K_XL|UD-Q4_K_XL,BF16,Q8_0,UD-IQ1_M,UD-IQ1_S,UD-IQ2_XXS,UD-IQ3_XXS,UD-IQ4_XS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q5_K_XL,UD-Q6_K_XL
+deepseek-v4-flash|DeepSeek-V4.1-Flash|ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF|deepseek-v4-flash|IQ1_M|IQ1_M,IQ2_XS,IQ2_XXS,IQ4_NL
+r1-distill-llama-70b|DeepSeek-R1-Distill-Llama-70B|unsloth/DeepSeek-R1-Distill-Llama-70B-GGUF|r1-distill-llama-70b|Q4_K_M|Q4_K_M,BF16,F16,IQ4_NL,IQ4_XS,Q2_K,Q2_K_L,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-IQ1_M,UD-IQ1_S,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_XXS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_XL,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+nemotron-nano-4b|Nemotron 3 Nano 4B|nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF|nemotron-nano-4b|Q4_K_M|Q4_K_M
+nemotron-nano-8b|Llama 3.1 Nemotron Nano 8B|bartowski/nvidia_Llama-3.1-Nemotron-Nano-8B-v1-GGUF|nemotron-nano-8b|Q4_K_M|Q4_K_M,bf16,IQ2_M,IQ3_M,IQ3_XS,IQ3_XXS,IQ4_NL,IQ4_XS,Q2_K,Q2_K_L,Q3_K_L,Q3_K_M,Q3_K_S,Q3_K_XL,Q4_0,Q4_1,Q4_K_L,Q4_K_S,Q5_K_L,Q5_K_M,Q5_K_S,Q6_K,Q6_K_L,Q8_0
+nemotron-nano-12b-v2|Nemotron Nano 12B v2|bartowski/nvidia_NVIDIA-Nemotron-Nano-12B-v2-GGUF|nemotron-nano-12b-v2|Q4_K_M|Q4_K_M,bf16,IQ2_M,IQ2_S,IQ3_M,IQ3_XS,IQ3_XXS,IQ4_NL,IQ4_XS,Q2_K,Q2_K_L,Q3_K_L,Q3_K_M,Q3_K_S,Q3_K_XL,Q4_0,Q4_1,Q4_K_L,Q4_K_S,Q5_K_L,Q5_K_M,Q5_K_S,Q6_K,Q6_K_L,Q8_0
+nemotron-elastic-12b-a2b|Nemotron Labs 3 Elastic 12B-A2B|mradermacher/NVIDIA-Nemotron-Labs-3-Elastic-12B-A2B-GGUF|nemotron-elastic-12b-a2b|Q4_K_M|Q4_K_M,IQ4_XS,Q2_K,Q3_K_L,Q3_K_M,Q3_K_S,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0
+nemotron-elastic-23b-a2_8b|Nemotron Labs 3 Elastic 23B-A2.8B|HackerTwins/NVIDIA-Nemotron-Labs-3-Elastic-23B-A2.8B-GGUF|nemotron-elastic-23b-a2_8b|Q4_K_M|Q4_K_M,Q4_K_S
+nemotron-nano-30b-a3b|Nemotron 3 Nano 30B-A3B|unsloth/Nemotron-3-Nano-30B-A3B-GGUF|nemotron-nano-30b-a3b|Q4_K_M|Q4_K_M,BF16,IQ4_NL,IQ4_XS,Q2_K_L,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_XXS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_XL,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+nemotron-elastic-30b-a3b|Nemotron Labs 3 Elastic 30B-A3B|mradermacher/NVIDIA-Nemotron-Labs-3-Elastic-30B-A3B-BF16-GGUF|nemotron-elastic-30b-a3b|Q4_K_M|Q4_K_M,BF16,IQ4_XS,Q2_K,Q3_K_L,Q3_K_M,Q3_K_S,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0
+nemotron-lightning-30b-a3b|Nemotron 3.5 Lightning 30B-A3B|unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF|nemotron-lightning-30b-a3b|Q4_K_M|Q4_K_M,BF16,MXFP4,Q8_0,UD-IQ1_M,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_S,UD-IQ3_XXS,UD-IQ4_NL,UD-Q3_K_XL,UD-Q4_K_M,UD-Q4_K_S,UD-Q4_K_XL,UD-Q5_K_M,UD-Q5_K_S,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+nemotron-super-49b-v1_5|Llama 3.3 Nemotron Super 49B v1.5|unsloth/Llama-3_3-Nemotron-Super-49B-v1_5-GGUF|nemotron-super-49b-v1_5|Q4_K_M|Q4_K_M,BF16,IQ4_NL,IQ4_XS,Q2_K,Q2_K_L,Q3_K_M,Q3_K_S,Q4_0,Q4_1,Q4_K_S,Q5_K_M,Q5_K_S,Q6_K,Q8_0,UD-IQ1_M,UD-IQ1_S,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_XXS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q4_K_XL,UD-Q5_K_XL,UD-Q6_K_XL,UD-Q8_K_XL
+nemotron-70b|Llama 3.1 Nemotron 70B Instruct|bartowski/Llama-3.1-Nemotron-70B-Instruct-HF-GGUF|nemotron-70b|Q4_K_M|Q4_K_M,IQ1_M,IQ2_M,IQ2_XS,IQ2_XXS,IQ3_M,IQ3_XXS,IQ4_XS,Q2_K,Q2_K_L,Q3_K_L,Q3_K_M,Q3_K_S,Q3_K_XL,Q4_0,Q4_K_L,Q4_K_S,Q5_K_L,Q5_K_M,Q5_K_S,Q6_K,Q8_0
+nemotron-bolt-74b-a9b|Nemotron 3.5 Bolt 74B-A9B|unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-GGUF|nemotron-bolt-74b-a9b|UD-Q4_K_XL|UD-Q4_K_XL,BF16,IQ2_XXS,NVFP4,Q8_0,UD-IQ1_M,UD-IQ1_S,UD-IQ2_M,UD-IQ2_XXS,UD-IQ3_XXS,UD-Q2_K_XL,UD-Q3_K_XL,UD-Q5_K_XL,UD-Q6_K_XL

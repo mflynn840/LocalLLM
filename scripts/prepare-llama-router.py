@@ -13,14 +13,28 @@ def read_catalog():
     for line in (ROOT / "config/models.tsv").read_text().splitlines():
         if not line or line.startswith("#"):
             continue
-        alias, label, repo, folder, quant = line.split("|")
-        items.append((alias, label, repo, folder, quant))
+        fields = line.split("|")
+        if len(fields) not in (5, 6):
+            raise ValueError(f"Invalid model catalog row: {line!r}")
+        alias, label, repo, folder, quant = fields[:5]
+        quants = fields[5].split(",") if len(fields) == 6 and fields[5] else [quant]
+        items.append((alias, label, repo, folder, quant, quants))
     return items
 
 
 def find_file(folder, quant):
     base = ROOT / "models" / folder
-    files = sorted(base.rglob(f"*{quant}*.gguf")) if base.is_dir() else []
+    files = []
+    if base.is_dir():
+        for path in base.rglob("*.gguf"):
+            name = path.name.lower()
+            index = name.find(quant.lower())
+            if index < 0:
+                continue
+            if not quant.upper().startswith("UD-") and name[max(0, index - 3):index] == "ud-":
+                continue
+            files.append(path)
+        files.sort()
     shards = [p for p in files if re.search(r"00001-of-.*\.gguf$", p.name)]
     files = shards or files
     return files[0] if files else None
@@ -41,6 +55,8 @@ def main():
         raise SystemExit(f"Unknown model alias: {args.model}")
     selected = by_alias[args.model]
     selected_quant = args.quant or selected[4]
+    if selected_quant not in selected[5]:
+        raise SystemExit(f"Unsupported quantization {selected_quant!r} for {args.model}")
     contexts = [value for value in CONTEXT_STEPS if value <= args.context]
     if args.context not in contexts:
         contexts.append(args.context)
@@ -55,13 +71,16 @@ def main():
         lines.append(f"hf-repo = {selected[2]}:{selected_quant}")
     lines.append("")
 
-    for alias, _label, repo, folder, default_quant in models:
-        quant = selected_quant if alias == selected[0] else default_quant
-        model_file = find_file(folder, quant)
-        source = (f"model = {args.model_root.rstrip('/')}/{model_file.relative_to(ROOT / 'models')}"
-                  if model_file else f"hf-repo = {repo}:{quant}")
-        for context in contexts:
-            lines.extend([f"[openhands-{alias}-ctx{context}]", source, f"c = {context}", ""])
+    for alias, _label, repo, folder, default_quant, quants in models:
+        for quant in quants:
+            model_file = find_file(folder, quant)
+            source = (f"model = {args.model_root.rstrip('/')}/{model_file.relative_to(ROOT / 'models')}"
+                      if model_file else f"hf-repo = {repo}:{quant}")
+            for context in contexts:
+                lines.extend([f"[openhands-{alias}-q{quant}-ctx{context}]", source, f"c = {context}", ""])
+                if quant == default_quant:
+                    # Keep the pre-quant-selector model IDs usable by saved profiles.
+                    lines.extend([f"[openhands-{alias}-ctx{context}]", source, f"c = {context}", ""])
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("\n".join(lines))

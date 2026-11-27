@@ -13,10 +13,15 @@ def read_catalog():
     for line in (ROOT / "config/models.tsv").read_text(encoding="utf-8").splitlines():
         if not line or line.startswith("#"):
             continue
-        alias = line.split("|", 1)[0]
+        fields = line.split("|")
+        alias = fields[0]
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", alias):
             raise ValueError(f"Invalid model alias in catalog: {alias!r}")
-        models.append(alias)
+        if len(fields) not in (5, 6):
+            raise ValueError(f"Invalid model catalog row: {line!r}")
+        default_quant = fields[4]
+        quants = fields[5].split(",") if len(fields) == 6 and fields[5] else [default_quant]
+        models.append((alias, default_quant, quants))
     if not models:
         raise ValueError("The model catalog is empty.")
     return models
@@ -34,11 +39,13 @@ def main():
     if args.context not in contexts:
         contexts.append(args.context)
     contexts = sorted(set(contexts))
-    models = ["local-model"] + [
-        f"openhands-{alias}-ctx{context}"
-        for alias in read_catalog()
-        for context in contexts
-    ]
+    routed_models = ["local-model"]
+    for alias, default_quant, quants in read_catalog():
+        for quant in quants:
+            for context in contexts:
+                routed_models.append(f"openhands-{alias}-q{quant}-ctx{context}")
+                if quant == default_quant:
+                    routed_models.append(f"openhands-{alias}-ctx{context}")
 
     lines = [
         "model_list:",
@@ -48,7 +55,7 @@ def main():
             f"      model: openai/{name}\n"
             "      api_base: os.environ/OPENHANDS_QUEUE_API_BASE\n"
             "      api_key: os.environ/LLAMA_API_KEY"
-            for name in models
+            for name in routed_models
         ],
         "",
         "general_settings:",

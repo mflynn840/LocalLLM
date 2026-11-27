@@ -95,7 +95,7 @@ function applyWslTerminal(payload) {
     "For project paths, use the mounted project path and the revision-guarded file tools when available.");
 }
 
-function applyModelSelection(payload, alias, context, effort) {
+function applyModelSelection(payload, alias, quant, context, effort) {
   if (!alias) return;
   const settings = launchSettings(payload);
   // Profile launches are resolved inside OpenHands. Its local_execution hook
@@ -104,20 +104,26 @@ function applyModelSelection(payload, alias, context, effort) {
   if (!settings?.llm) throw new Error("The selected OpenHands profile has no configurable local model settings.");
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(alias)) throw new Error("Invalid local model selection.");
   const catalogPath = process.env.OPENHANDS_MODEL_CATALOG_PATH || "/opt/local-models/models.tsv";
-  let aliases;
+  let catalog;
   try {
-    aliases = new Set(readFileSync(catalogPath, "utf8").split(/\r?\n/)
-      .filter((line) => line && !line.startsWith("#")).map((line) => line.split("|", 1)[0]));
+    catalog = new Map(readFileSync(catalogPath, "utf8").split(/\r?\n/)
+      .filter((line) => line && !line.startsWith("#")).map((line) => {
+        const fields = line.split("|");
+        return [fields[0], { defaultQuant: fields[4], quants: fields[5] ? fields[5].split(",") : [fields[4]] }];
+      }));
   } catch (error) {
     throw new Error(`Could not read the local model catalog: ${error.message}`);
   }
-  if (!aliases.has(alias)) throw new Error("The selected model is not in the LocalLLM catalog.");
+  const entry = catalog.get(alias);
+  if (!entry) throw new Error("The selected model is not in the LocalLLM catalog.");
+  quant ||= entry.defaultQuant;
+  if (!entry.quants.includes(quant)) throw new Error("The selected quantization is not available for this model.");
   const contextLimit = Number.parseInt(process.env.OPENHANDS_MODEL_CONTEXT_MAX || "8192", 10);
   const contexts = contextSteps.filter((value) => value <= contextLimit);
   if (contextLimit > 0 && !contexts.includes(contextLimit)) contexts.push(contextLimit);
   const size = Number(context);
   if (!Number.isInteger(size) || !contexts.includes(size)) throw new Error("The selected context size is not available in this LocalLLM setup.");
-  settings.llm.model = `litellm_proxy/openhands-${alias}-ctx${size}`;
+  settings.llm.model = `litellm_proxy/openhands-${alias}-q${quant}-ctx${size}`;
   if (process.env.LLM_BASE_URL) settings.llm.base_url = process.env.LLM_BASE_URL.replace(/\/v1\/?$/, "");
   settings.llm.max_input_tokens = size;
   if (effort && reasoningEfforts.has(effort)) settings.llm.reasoning_effort = effort;
@@ -159,14 +165,16 @@ async function launchConversation(req, res, backend) {
     payload.conversation_runtime = "local";
   }
   const model = cookieValue(req, "openhands_model");
+  const quant = cookieValue(req, "openhands_quant");
   const context = cookieValue(req, "openhands_context");
   const effort = cookieValue(req, "openhands_effort");
   if (/^[a-zA-Z0-9._-]+$/.test(model)) payload.tags.localmodel = model;
+  if (/^[a-zA-Z0-9._-]+$/.test(quant)) payload.tags.localquant = quant;
   if (/^\d{1,6}$/.test(context)) payload.tags.localcontext = context;
   if (reasoningEfforts.has(effort)) payload.tags.localeffort = effort;
   try {
     if (hostMode) applyWslTerminal(payload);
-    if (model) applyModelSelection(payload, model, context, effort);
+    if (model) applyModelSelection(payload, model, quant, context, effort);
   } catch (error) {
     json(res, 400, { detail: error.message });
     return;

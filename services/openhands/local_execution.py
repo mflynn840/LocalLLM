@@ -44,8 +44,12 @@ def apply_terminal_mode(source, request):
         "owner's normal WSL user in the exact host working directory, with that user's "
         "shell startup files, installed tools, and filesystem permissions. Use the "
         "For Jetson requests, read .openhands/skills/jetson-connect/SKILL.md in the "
-        "project workspace and use jetson-host_jetson_exec only when the user explicitly "
-        "asks to work on the Jetson. It connects as michael with sudo access. Preserve "
+        "project workspace and use jetson-host_jetson_exec for remote commands and "
+        "jetson_write_file for project files when the user explicitly asks to work on "
+        "the Jetson. These tools operate remotely through the host bridge. Never use "
+        "local cp, scp, or ssh from the workspace to reach the Jetson. jetson_write_file "
+        "writes files under /home/michael/Code/task1 and creates parent directories. "
+        "Preserve "
         "user data and SSD contents unless the user explicitly requests a destructive "
         "storage operation. Use /home/michael/AI/jetson/connect_jetson.sh in My PC "
         "(WSL) mode only for USB-network setup or when the MCP tool is unavailable. "
@@ -74,13 +78,20 @@ def apply_model_selection(source, request):
         raise AgentLaunchError("The selected local model alias is invalid.")
 
     catalog = Path(os.environ.get("OPENHANDS_MODEL_CATALOG_PATH", "/opt/local-models/models.tsv"))
-    aliases = {
-        line.split("|", 1)[0]
-        for line in catalog.read_text(encoding="utf-8").splitlines()
-        if line and not line.startswith("#")
-    }
-    if alias not in aliases:
+    entries = {}
+    for line in catalog.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("|")
+        if len(fields) not in (5, 6):
+            continue
+        entries[fields[0]] = (fields[4], fields[5].split(",") if len(fields) == 6 and fields[5] else [fields[4]])
+    if alias not in entries:
         raise AgentLaunchError("The selected model is not in the LocalLLM catalog.")
+    default_quant, supported_quants = entries[alias]
+    quant = tags.get("localquant") or default_quant
+    if quant not in supported_quants:
+        raise AgentLaunchError("The selected quantization is not available for this model.")
 
     context_value = tags.get("localcontext", "8192")
     try:
@@ -99,7 +110,7 @@ def apply_model_selection(source, request):
     if not isinstance(source, ResolvedLaunch) or not isinstance(source.settings, OpenHandsAgentSettings):
         raise AgentLaunchError("Select an OpenHands profile to use a LocalLLM model.")
 
-    variant = f"openhands-{alias}-ctx{context}"
+    variant = f"openhands-{alias}-q{quant}-ctx{context}"
     llm = source.settings.llm.model_copy(update={
         "model": f"litellm_proxy/{variant}",
         "base_url": os.environ.get("LLM_BASE_URL"),

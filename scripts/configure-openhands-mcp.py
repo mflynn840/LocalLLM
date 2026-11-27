@@ -13,7 +13,11 @@ SESSION_KEY_PATH = Path("/home/openhands/.openhands/agent-canvas/api-key.txt")
 NPM_BIN_DIR = Path("/home/openhands/.local/npm/bin").resolve()
 MCP_MANIFEST = Path("/home/openhands/.local/mcp-packages.json")
 
-session_key = SESSION_KEY_PATH.read_text(encoding="utf-8").strip()
+session_key = os.environ.get("SESSION_API_KEY", "").strip()
+if not session_key and SESSION_KEY_PATH.is_file():
+    session_key = SESSION_KEY_PATH.read_text(encoding="utf-8").strip()
+if not session_key:
+    raise RuntimeError("OpenHands SESSION_API_KEY is unavailable for MCP configuration.")
 headers = {"X-Session-API-Key": session_key}
 
 

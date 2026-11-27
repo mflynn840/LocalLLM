@@ -6,6 +6,11 @@ from litellm.integrations.custom_logger import CustomLogger
 
 MARKER = "<local-openhands-tools>"
 SEARCH_TOOLS = {"local-repo-context_repo_search", "local-file-edit_search_files"}
+TOOL_ARGUMENT_ERRORS = (
+    "unparseable json",
+    "failed to parse tool call arguments",
+    "expecting property name enclosed in double quotes",
+)
 
 
 def repeated_search(messages):
@@ -31,12 +36,25 @@ def repeated_search(messages):
     return None
 
 
+def invalid_tool_arguments(messages):
+    """Detect a rejected malformed call so the model can retry the guarded tool."""
+    for message in reversed(messages):
+        content = message.get("content", "")
+        if isinstance(content, str):
+            text = content.casefold()
+        else:
+            text = json.dumps(content, ensure_ascii=False).casefold()
+        if any(marker in text for marker in TOOL_ARGUMENT_ERRORS):
+            return True
+    return False
+
+
 class OpenHandsChatCompatibility(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         if (
             not (
                 (os.environ.get("LOCAL_MODEL_ALIAS") == "gpt-oss-20b" and data.get("model") == "local-model")
-                or str(data.get("model", "")).startswith("openhands-gpt-oss-20b-ctx")
+                or str(data.get("model", "")).startswith(("openhands-gpt-oss-20b-ctx", "openhands-gpt-oss-20b-q"))
             )
             or not any(message.get("role") in {"system", "developer"}
                        and MARKER in str(message.get("content", ""))
@@ -50,6 +68,15 @@ class OpenHandsChatCompatibility(CustomLogger):
         tools = data.get("tools") or []
         suppressed = {"finish"}
         repeated = repeated_search(data.get("messages") or [])
+        if invalid_tool_arguments(data.get("messages") or []):
+            data["messages"] = [*(data.get("messages") or []), {
+                "role": "developer",
+                "content": "The previous tool call failed because its arguments were not valid JSON. "
+                           "Retry the same guarded local-file-edit tool with clean JSON arguments, "
+                           "for example {\"path\": \"...\", \"content\": \"...\"}. "
+                           "Do not switch to a shell command to create or edit project files. "
+                           "Keep file changes on the revision-guarded local-file-edit tools.",
+            }]
         if repeated:
             suppressed.add(repeated)
             messages = data["messages"]
