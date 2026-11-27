@@ -165,6 +165,7 @@ services:
     image: local-ai-ingress:latest
     environment:
       BACKEND_BIND_ADDRESS: ${BACKEND_BIND_ADDRESS:-127.0.0.1}
+      OPENHANDS_BIND_ADDRESS: ${OPENHANDS_BIND_ADDRESS:-127.0.0.1}
     command: ["/entrypoint.sh"]
     cap_drop:
       - ALL
@@ -179,7 +180,7 @@ services:
     ports:
       - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${OPEN_WEBUI_PORT:-3000}:3000"
       - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
-      - "127.0.0.1:${OPENHANDS_PORT:-8000}:8000"
+      - "${OPENHANDS_BIND_ADDRESS:-127.0.0.1}:${OPENHANDS_PORT:-8000}:8000"
     depends_on:
       - open-webui
       - model-portal

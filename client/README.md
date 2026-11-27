@@ -11,12 +11,14 @@ mounts only `client/workspace`, keeps its conversations in a local Docker volume
 and calls the backend's LiteLLM-compatible model gateway with a personal API
 key. It does not mount the backend computer's files or Docker socket.
 
-1. Ask the backend owner for the registration code and open
-   `http://<backend-host>:4000/register`.
+1. Ask the backend owner for the registration code and the backend URL (for example `http://<jetson-lan-ip>:4001`). The port must match the backend's `LITELLM_PORT`. Open
+   `http://<jetson-lan-ip>:4001/register`.
 2. Register an email, follow the invitation, set a password, and create a
    personal key for `local-model` in the LiteLLM UI.
 3. Run `./start.sh` (Linux/macOS) or `bash start.sh` (Windows with WSL/Git Bash),
    enter the backend URL, then paste the personal key at the hidden prompt.
+   Or pre-configure non-interactively:
+   `./start.sh --server-url http://<jetson-lan-ip>:4001 --api-key <personal-key>`
 4. Open `http://localhost:8000/canvas`. Put projects in `workspace/`.
 
 The backend owner can hand out this `client/` folder or a zip of it. Docker

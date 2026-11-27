@@ -26,13 +26,19 @@ ensure_env() {
         (umask 077 && cp "$ROOT/.env.example" "$ROOT/.env")
         echo "Created .env from .env.example."
     fi
-    python3 - "$ROOT/.env" <<'PY'
+    # Auto-detect LAN IP for BACKEND_PUBLIC_URL when it is missing or still a placeholder.
+    lan_ip=""
+    if ! grep -qE '^BACKEND_PUBLIC_URL=http://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:' "$ROOT/.env" 2>/dev/null; then
+        lan_ip="$(bash "$ROOT/scripts/detect-lan-ip.sh" 2>/dev/null || true)"
+    fi
+    python3 - "$ROOT/.env" "$lan_ip" <<'PY'
 import os
 import secrets
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+lan_ip = sys.argv[2]
 lines = path.read_text(encoding="utf-8").splitlines()
 values = {
     line.split("=", 1)[0]: line.split("=", 1)[1]
@@ -63,10 +69,19 @@ for name, default in (("BACKEND_BIND_ADDRESS", "0.0.0.0"), ("OPENHANDS_BIND_ADDR
     prefix = name + "="
     if not any(line.startswith(prefix) for line in lines):
         lines.append(prefix + default)
-lines = [
-    "OPENHANDS_BIND_ADDRESS=127.0.0.1" if line.startswith("OPENHANDS_BIND_ADDRESS=") else line
-    for line in lines
-]
+# Auto-set BACKEND_PUBLIC_URL when missing or still a placeholder.
+litellm_port = values.get("LITELLM_PORT", "4000").strip().strip("\"'" )
+public_prefix = "BACKEND_PUBLIC_URL="
+has_public = any(line.startswith(public_prefix) for line in lines)
+if lan_ip and (not has_public or "<BACKEND_LAN_IP>" in "\n".join(lines)):
+    public_url = f"http://{lan_ip}:{litellm_port}"
+    if has_public:
+        lines = [
+            public_prefix + public_url if line.startswith(public_prefix) else line
+            for line in lines
+        ]
+    else:
+        lines.append(public_prefix + public_url)
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 os.chmod(path, 0o600)
 PY

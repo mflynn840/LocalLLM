@@ -71,6 +71,17 @@ set -a
 . "$ENV_FILE"
 set +a
 
+# Auto-detect the machine's LAN IP for BACKEND_PUBLIC_URL so the backend is
+# reachable from client machines on the same LAN without manual editing.
+lan_ip=""
+if [[ -z "${BACKEND_LAN_IP:-}" ]] && command -v bash >/dev/null 2>&1; then
+    lan_ip="$(bash "$ROOT/scripts/detect-lan-ip.sh" 2>/dev/null || true)"
+fi
+if [[ -z "${lan_ip:-}" ]]; then
+    lan_ip="${BACKEND_LAN_IP:-}"
+fi
+litellm_port="${LITELLM_PORT:-4000}"
+
 default_model="${DEFAULT_MODEL-gemma-4-12b}"
 default_quant="${DEFAULT_QUANT-Q4_K_M}"
 persist_defaults=0
@@ -103,7 +114,7 @@ for spec in "${model_specs[@]:1}"; do
     download_args+=(--model "$spec")
 done
 
-python3 - "$ENV_FILE" "$ROOT" "$default_model" "$default_quant" "$persist_defaults" <<'PY'
+python3 - "$ENV_FILE" "$ROOT" "$default_model" "$default_quant" "$persist_defaults" "$lan_ip" "$litellm_port" <<'PY'
 import os
 import secrets
 import sys
@@ -113,6 +124,8 @@ env_file = Path(sys.argv[1])
 project_root = Path(sys.argv[2])
 default_model, default_quant = sys.argv[3:5]
 persist_defaults = sys.argv[5] == "1"
+lan_ip = sys.argv[6]
+litellm_port = sys.argv[7]
 lines = env_file.read_text(encoding="utf-8").splitlines()
 values = {
     line.split("=", 1)[0]: line.split("=", 1)[1]
@@ -138,6 +151,10 @@ replacements = {
     "WEB_SEARCH_ENABLED": ("true", "true"),
     "BACKEND_BIND_ADDRESS": ("127.0.0.1", "0.0.0.0"),
     "OPENHANDS_BIND_ADDRESS": ("0.0.0.0", "127.0.0.1"),
+    "BACKEND_PUBLIC_URL": (
+        "http://<BACKEND_LAN_IP>:4001",
+        f"http://{lan_ip}:{litellm_port}" if lan_ip else "http://<BACKEND_LAN_IP>:4001",
+    ),
 }
 for key, (placeholder, generated) in replacements.items():
     current = values.get(key, "").strip().strip("\"'")
@@ -217,3 +234,5 @@ fi
 echo
 echo "Installation complete."
 echo "Start the stack with: ./start.sh"
+echo "Backend public URL for clients: ${BACKEND_PUBLIC_URL:-http://<LAN-IP>:4001}"
+echo "If autodetection was wrong, edit BACKEND_PUBLIC_URL in .env and rerun ./start.sh."

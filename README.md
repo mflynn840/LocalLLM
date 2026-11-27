@@ -83,6 +83,28 @@ Do not forward these ports from your router or expose them to the public interne
 
 Backend owner OpenHands uses `LITELLM_MASTER_KEY` internally. Client instances use each user's personal virtual key; the master key is never distributed.
 
+### Two-machine setup: Jetson backend + local client
+
+To run the backend on the Jetson and consume it from this PC:
+
+**On the Jetson (backend host):**
+```sh
+# On the Jetson, clone this repo, then:
+./install.sh          # auto-detects the Jetson's LAN IP and writes BACKEND_PUBLIC_URL
+./start.sh            # starts the full backend stack (model server + LiteLLM + Open WebUI + OpenHands)
+```
+`install.sh` writes `BACKEND_PUBLIC_URL=http://<jetson-lan-ip>:4001` into `.env`. Clients use this URL to register and connect.
+
+**On this PC (client consumer):**
+```sh
+cd client
+./start.sh --server-url http://<jetson-lan-ip>:4001 --api-key <personal-key>
+```
+1. First open `http://<jetson-lan-ip>:4001/register` on the Jetson, register with the shared `MODEL_SIGNUP_CODE`, and create a personal `local-model` API key.
+2. Then run the client command above with that key. The client's OpenHands runs at `http://localhost:8000/canvas` and calls the Jetson's model gateway.
+
+The client mounts only `client/workspace` and never touches the Jetson's files or Docker socket.
+
 OpenCode has automatic compaction enabled in [config/opencode.json](./config/opencode.json). It starts compacting with a 15% context buffer (at least 16,000 tokens), so with a 100,000-token context it begins at about 84,000 tokens. The compacted conversation keeps roughly the latest 15,000 tokens alongside its summary. Compaction uses the selected local model through LiteLLM.
 
 OpenHands provisions a selectable **Finish-and-Verify** agent profile in Settings > Agent. Use it for coding tasks when you want the agent to continue through implementation, a relevant smoke or dry run, unit tests, and a final review of every changed file. It does not replace or activate over your current profile. Startup refreshes its instructions while preserving the default profile's model and tool configuration.
