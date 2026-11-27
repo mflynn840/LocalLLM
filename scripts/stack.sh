@@ -123,8 +123,9 @@ check_agent_lock() {
 
 preload() {
     ensure_env
-    docker compose --env-file "$ROOT/.env" pull litellm litellm-db open-webui openhands qdrant embedding-server
-    docker compose --env-file "$ROOT/.env" build ingress memory-mcp file-edit-mcp web-search-mcp web-loader model-portal
+    docker compose --env-file "$ROOT/.env" pull litellm litellm-db open-webui qdrant embedding-server
+    docker compose --env-file "$ROOT/.env" build ingress memory-mcp repo-context-mcp file-edit-mcp web-search-mcp web-loader model-portal
+    docker compose --env-file "$ROOT/.env" --profile openhands build openhands
     docker compose --env-file "$ROOT/.env" --profile cuda pull llama-server
     docker compose --env-file "$ROOT/.env" --profile web-search pull searxng
     docker compose --env-file "$ROOT/.env" --profile mcp-install pull mcp-installer
@@ -270,6 +271,7 @@ up() {
     export CONTEXT_SIZE="$context"
     export GPU_LAYERS="$gpu_layers"
     export LLAMA_API_BASE
+    export LOCAL_MODEL_ALIAS="$model"
 
     if [[ "$backend" == "metal" ]]; then
         stop_cuda_model
@@ -338,7 +340,10 @@ up() {
         fi
     fi
 
-    docker compose --env-file "$ROOT/.env" build ingress model-portal file-edit-mcp
+    docker compose --env-file "$ROOT/.env" build ingress model-portal memory-mcp file-edit-mcp
+    if [[ "$agent" == "openhands" ]]; then
+        docker compose --env-file "$ROOT/.env" --profile openhands build openhands repo-context-mcp
+    fi
     if ! docker compose --env-file "$ROOT/.env" "${profiles[@]}" up -d --wait "${services[@]}"; then
         stop_local_model
         exit 1
@@ -355,7 +360,7 @@ up() {
     if [[ "$agent" == "openhands" ]]; then
         echo "OpenHands sandbox: $sandbox_level"
         echo "OpenHands:   http://localhost:${OPENHANDS_PORT:-8000}/canvas"
-        echo "Memory, file-editing, and search MCPs are provisioned automatically."
+        echo "Memory, repository evidence, file-editing, and search MCPs are provisioned automatically."
     else
         echo "OpenCode runs on the host and is not constrained by OpenHands sandbox settings."
         echo "OpenCode CLI: run scripts/code.sh from your project directory."

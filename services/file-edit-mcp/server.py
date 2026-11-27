@@ -18,9 +18,11 @@ from pydantic import BaseModel
 
 MAX_FILE_BYTES = 2_000_000
 MAX_READ_LINES = 300
-HOST_HOME = Path(os.environ.get("OPENHANDS_HOST_HOME", "/host/home"))
+REVISION_LENGTH = 12
 WORKSPACE_ROOT = Path(os.environ.get("OPENHANDS_WORKSPACE_PATH", "/projects"))
-ALLOWED_ROOTS = (Path("/projects"), Path("/host"), HOST_HOME, WORKSPACE_ROOT)
+ALLOWED_ROOTS = (Path("/projects"), WORKSPACE_ROOT)
+SENSITIVE_NAMES = {".env", ".npmrc", "id_rsa", "id_ed25519", "credentials.json"}
+SENSITIVE_SUFFIXES = {".pem", ".key"}
 
 server = FastMCP("Safe file editing", host="0.0.0.0", port=8000)
 
@@ -101,14 +103,21 @@ def replace_spans(
     return text
 
 
-def write_atomic(target: Path, data: bytes, mode: int) -> None:
+def preserve_owner(fd: int, owner: os.stat_result) -> None:
+    current = os.fstat(fd)
+    if (current.st_uid, current.st_gid) != (owner.st_uid, owner.st_gid):
+        os.fchown(fd, owner.st_uid, owner.st_gid)
+
+
+def write_atomic(target: Path, data: bytes, owner: os.stat_result) -> None:
     fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     try:
         with os.fdopen(fd, "wb") as temporary:
+            preserve_owner(temporary.fileno(), owner)
             temporary.write(data)
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.chmod(temporary_name, mode)
+        os.chmod(temporary_name, stat.S_IMODE(owner.st_mode))
         os.replace(temporary_name, target)
     except Exception:
         try:
@@ -119,17 +128,20 @@ def write_atomic(target: Path, data: bytes, mode: int) -> None:
 
 
 def resolve_allowed_path(raw_path: str) -> Path:
-    if raw_path == "~" or raw_path.startswith("~/"):
-        path = HOST_HOME / raw_path[2:] if raw_path != "~" else HOST_HOME
-    else:
-        path = Path(raw_path)
+    path = Path(raw_path)
     if not path.is_absolute():
         path = WORKSPACE_ROOT / path
     resolved = path.resolve(strict=False)
     roots = tuple(root.resolve(strict=False) for root in ALLOWED_ROOTS)
     if not any(resolved == root or root in resolved.parents for root in roots):
-        raise ValueError("Path must be inside /projects or /host.")
+        raise ValueError("Path must be inside the configured project workspace.")
+    if resolved.name in SENSITIVE_NAMES or resolved.suffix.lower() in SENSITIVE_SUFFIXES:
+        raise ValueError("Credential and private-key files are not available through Docker file tools; use My PC mode if you explicitly need host access.")
     return resolved
+
+
+def matches_revision(expected: str, digest: str) -> bool:
+    return expected == digest or expected == digest[:REVISION_LENGTH]
 
 
 def load_text(path: Path) -> tuple[bytes, str, str]:
@@ -145,7 +157,7 @@ def load_text(path: Path) -> tuple[bytes, str, str]:
 def read_file_lines(path: str, start_line: int = 1, max_lines: int = 120) -> str:
     """Read a bounded, line-numbered text range before editing.
 
-    Returns a SHA-256 revision token. Use that token with replace_file_lines so
+    Returns a short revision and the full SHA-256. Pass either as expected_sha256 so
     edits fail safely if another change happened after the read.
     """
     target = resolve_allowed_path(path)
@@ -161,8 +173,9 @@ def read_file_lines(path: str, start_line: int = 1, max_lines: int = 120) -> str
     selected = lines[first : first + max_lines]
     numbered = "\n".join(f"{first + i + 1}: {line}" for i, line in enumerate(selected))
     end_line = first + len(selected)
+    digest = hashlib.sha256(raw).hexdigest()
     return (
-        f"path: {target}\nsha256: {hashlib.sha256(raw).hexdigest()}\n"
+        f"path: {target}\nrevision: {digest[:REVISION_LENGTH]}\nsha256: {digest}\n"
         f"total_lines: {len(lines)}\nshowing: {start_line}-{end_line}\n{numbered}"
     )
 
@@ -188,6 +201,8 @@ def search_files(root: str, query: str, pattern: str = "**/*", max_results: int 
         dirs[:] = sorted(d for d in dirs if d not in excluded and not (Path(current) / d).is_symlink())
         for name in sorted(files):
             candidate = Path(current) / name
+            if candidate.name in SENSITIVE_NAMES or candidate.suffix.lower() in SENSITIVE_SUFFIXES:
+                continue
             rel = candidate.relative_to(base)
             if not rel.match(pattern):
                 continue
@@ -229,6 +244,7 @@ def replace_file_lines(
 ) -> str:
     """Replace a 1-based inclusive line range using the hash from read_file_lines.
 
+    Pass the short revision or full SHA-256 as expected_sha256.
     Set end_line to start_line - 1 to insert at that location. The file must
     already exist. Returns the exact diff and the new hash; stale hashes do not
     modify the file.
@@ -238,10 +254,11 @@ def replace_file_lines(
         raise ValueError(f"Not an existing regular file: {target}")
     raw, text, newline = load_text(target)
     old_hash = hashlib.sha256(raw).hexdigest()
-    if old_hash != expected_sha256:
+    if not matches_revision(expected_sha256, old_hash):
         return json.dumps(
             {
                 "ok": False,
+                "code": "stale_hash", "hint": "Reread the affected lines and retry with the new revision.",
                 "error": "File changed since it was read; reread it and retry with the new sha256.",
                 "current_sha256": old_hash,
             }
@@ -273,21 +290,7 @@ def replace_file_lines(
             n=3,
         )
     )
-    mode = stat.S_IMODE(target.stat().st_mode)
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    try:
-        with os.fdopen(fd, "wb") as temporary:
-            temporary.write(updated_bytes)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.chmod(temporary_name, mode)
-        os.replace(temporary_name, target)
-    except Exception:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
+    write_atomic(target, updated_bytes, target.stat())
 
     return json.dumps(
         {
@@ -305,12 +308,15 @@ def replace_text(
     path: str,
     old_text: str,
     new_text: str,
-    expected_sha256: str,
+    expected_sha256: str | None = None,
     ignore_whitespace: bool = False,
     replace_all: bool = False,
+    revision: str | None = None,
 ) -> str:
     """Replace exact or whitespace-tolerant text from read_file_lines output.
 
+    Pass the 12-character revision from read_file_lines as revision.
+    Existing clients can pass a SHA-256 as expected_sha256.
     By default exactly one match is required. Set ignore_whitespace to tolerate
     indentation, tabs, trailing spaces, and line-ending differences. Set
     replace_all for deliberate repeated replacements. Failures include nearby
@@ -318,23 +324,33 @@ def replace_text(
     """
     if not old_text:
         raise ValueError("old_text must not be empty.")
+    expected = revision if revision is not None else expected_sha256
+    if expected is None:
+        raise ValueError("Pass the short revision from read_file_lines.")
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{12}", revision):
+        raise ValueError("Use the 12 characters after revision: in the read result.")
     target = resolve_allowed_path(path)
     if not target.is_file():
         raise ValueError(f"Not an existing regular file: {target}")
     raw, text, _ = load_text(target)
     old_hash = hashlib.sha256(raw).hexdigest()
-    if old_hash != expected_sha256:
-        return json.dumps({"ok": False, "error": "File changed since it was read; reread and retry.", "current_sha256": old_hash})
+    if not matches_revision(expected, old_hash):
+        return json.dumps({"ok": False, "code": "stale_hash",
+                           "hint": "Reread the affected lines and retry with the new revision.",
+                           "error": "File changed since it was read; reread and retry.",
+                           "current_sha256": old_hash})
     spans = find_text_spans(text, old_text, ignore_whitespace)
     if not spans:
         return json.dumps({
             "ok": False,
+            "code": "no_match", "hint": "Reread the relevant lines and use the exact current text.",
             "error": "No match found. Check indentation, tabs, line endings, and nearby text; or reread the file.",
             "closest_lines": nearest_lines(text, old_text),
         }, ensure_ascii=False)
     if len(spans) > 1 and not replace_all:
         return json.dumps({
             "ok": False,
+            "code": "ambiguous_match", "hint": "Include unique surrounding lines.",
             "error": f"Found {len(spans)} matches; add more surrounding text or set replace_all=true.",
             "match_count": len(spans),
         })
@@ -353,21 +369,7 @@ def replace_text(
         text.splitlines(keepends=True), updated.splitlines(keepends=True),
         fromfile=str(target), tofile=str(target), n=3,
     ))
-    mode = stat.S_IMODE(target.stat().st_mode)
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-    try:
-        with os.fdopen(fd, "wb") as temporary:
-            temporary.write(updated_bytes)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.chmod(temporary_name, mode)
-        os.replace(temporary_name, target)
-    except Exception:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
+    write_atomic(target, updated_bytes, target.stat())
     return json.dumps({
         "ok": True,
         "path": str(target),
@@ -405,10 +407,11 @@ def bulk_edit(edits: list[FileTextEdit]) -> str:
         if total_size > 20_000_000:
             raise ValueError("Combined bulk edit input exceeds 20 MB.")
         actual_hash = hashlib.sha256(raw).hexdigest()
-        if actual_hash != edit.expected_sha256:
+        if not matches_revision(edit.expected_sha256, actual_hash):
             return json.dumps({
                 "ok": False,
                 "path": str(target),
+                "code": "stale_hash", "hint": "Reread the affected lines and retry with the new revision.",
                 "error": "File changed since it was read; reread and retry the bulk edit.",
                 "current_sha256": actual_hash,
             })
@@ -417,6 +420,7 @@ def bulk_edit(edits: list[FileTextEdit]) -> str:
             return json.dumps({
                 "ok": False,
                 "path": str(target),
+                "code": "no_match", "hint": "Reread the relevant lines and use the exact current text.",
                 "error": "No match found; inspect the closest lines or reread the file.",
                 "closest_lines": nearest_lines(text, edit.old_text),
             }, ensure_ascii=False)
@@ -424,6 +428,7 @@ def bulk_edit(edits: list[FileTextEdit]) -> str:
             return json.dumps({
                 "ok": False,
                 "path": str(target),
+                "code": "ambiguous_match", "hint": "Include unique surrounding lines.",
                 "error": f"Found {len(spans)} matches; set replace_all=true or make old_text more specific.",
                 "match_count": len(spans),
             })
@@ -444,7 +449,7 @@ def bulk_edit(edits: list[FileTextEdit]) -> str:
         prepared.append({
             "path": target,
             "original": raw,
-            "mode": stat.S_IMODE(target.stat().st_mode),
+            "owner": target.stat(),
             "updated": updated_bytes,
             "sha256": hashlib.sha256(updated_bytes).hexdigest(),
             "diff": diff,
@@ -458,10 +463,11 @@ def bulk_edit(edits: list[FileTextEdit]) -> str:
             fd, name = tempfile.mkstemp(prefix=f".{item['path'].name}.", dir=item['path'].parent)
             staged.append((item, name))
             with os.fdopen(fd, "wb") as output:
+                preserve_owner(output.fileno(), item["owner"])
                 output.write(item["updated"])
                 output.flush()
                 os.fsync(output.fileno())
-            os.chmod(name, item["mode"])
+            os.chmod(name, stat.S_IMODE(item["owner"].st_mode))
         for item, _ in staged:
             current = item["path"].read_bytes()
             if hashlib.sha256(current).hexdigest() != hashlib.sha256(item["original"]).hexdigest():
@@ -471,7 +477,7 @@ def bulk_edit(edits: list[FileTextEdit]) -> str:
             committed.append(item)
     except Exception:
         for item in reversed(committed):
-            write_atomic(item["path"], item["original"], item["mode"])
+            write_atomic(item["path"], item["original"], item["owner"])
         raise
     finally:
         for _, name in staged:
@@ -512,10 +518,22 @@ def create_file(path: str, content: str) -> str:
             f"File already exists: {target}. Read it and use replace_file_lines to edit it."
         ) from None
     with os.fdopen(fd, "wb") as created:
+        if os.geteuid() == 0:
+            preserve_owner(created.fileno(), target.parent.stat())
         created.write(encoded)
         created.flush()
         os.fsync(created.fileno())
     return json.dumps({"ok": True, "created": str(target), "bytes": len(encoded)})
+
+
+@server.tool()
+def create_directory(path: str) -> str:
+    """Create a directory and any missing parents inside the project workspace."""
+    target = resolve_allowed_path(path)
+    target.mkdir(parents=True, exist_ok=True)
+    if not target.is_dir():
+        raise ValueError(f"Path exists and is not a directory: {target}")
+    return json.dumps({"ok": True, "path": str(target)}, ensure_ascii=False)
 
 
 if __name__ == "__main__":

@@ -160,6 +160,16 @@ def configure():
         },
     )
 
+    save_server(
+        "local-repo-context",
+        {
+            "url": "http://repo-context-mcp:8000/mcp",
+            "transport": "streamable-http",
+            "enabled": True,
+            "description": "Live repository evidence, dependency declarations, and check receipts",
+        },
+    )
+
     for record in load_installed_servers():
         save_server(record["id"], record["server"])
 

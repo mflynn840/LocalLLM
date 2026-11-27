@@ -1,7 +1,9 @@
+import hashlib
 import os
 import re
 import threading
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,6 +19,9 @@ EMBEDDING_URL = os.environ.get(
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-small-en-v1.5")
 client = QdrantClient(url=os.environ.get("QDRANT_URL", "http://qdrant:6333"))
 scope_pattern = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+PROJECT = hashlib.sha256(os.environ.get("MEMORY_PROJECT", "./workspace").encode()).hexdigest()
+WORKSPACE = Path(os.environ.get("MEMORY_WORKSPACE", "/projects")).resolve()
+KINDS = {"decision", "preference", "repo_fact", "checkpoint"}
 collection_lock = threading.Lock()
 
 
@@ -41,7 +46,7 @@ def _ensure_collection() -> None:
 def _embed(text: str) -> list[float]:
     response = httpx.post(
         f"{EMBEDDING_URL}/embeddings",
-        json={"model": EMBEDDING_MODEL, "input": text},
+        json={"model": EMBEDDING_MODEL, "input": text.encode()[:420].decode(errors="ignore")},
         timeout=60,
     )
     response.raise_for_status()
@@ -53,87 +58,121 @@ def _embed(text: str) -> list[float]:
     return vector
 
 
-def save_memory(content: str, scope: str = "project", tags: list[str] | None = None) -> str:
+def source_hash(source_path: str) -> str | None:
+    relative = Path(source_path)
+    if relative.is_absolute() or not relative.parts or any(
+        part == ".." or part.startswith(".env") or part in {".git", "secrets", "credentials"}
+        or Path(part).suffix.lower() in {".pem", ".key", ".p12"}
+        for part in relative.parts
+    ):
+        return None
+    path = WORKSPACE / relative
+    try:
+        if path.resolve() != path or not path.is_file():
+            return None
+        with path.open("rb") as stream:
+            data = stream.read(2_000_001)
+        return hashlib.sha256(data).hexdigest() if len(data) <= 2_000_000 else None
+    except OSError:
+        return None
+
+
+def project_filter(*conditions) -> models.Filter:
+    return models.Filter(must=[
+        models.FieldCondition(key="project_id", match=models.MatchValue(value=PROJECT)),
+        *conditions,
+    ])
+
+
+def save_memory(
+    content: str, scope: str = "project", tags: list[str] | None = None, *,
+    kind: str = "decision", source_path: str | None = None,
+    source_sha256: str | None = None, evidence: str | None = None,
+    memory_key: str | None = None,
+) -> str:
     content = content.strip()
-    if not content:
-        raise ValueError("Memory content cannot be empty.")
-    if len(content) > 5000:
-        raise ValueError("Memory content must be 5,000 characters or fewer.")
+    if not content or len(content) > 5000:
+        raise ValueError("Provide 1–5,000 characters of memory content.")
     scope = _validate_scope(scope)
-    if tags is None:
-        tags = []
+    tags = tags or []
     if len(tags) > 12 or any(len(tag) > 64 for tag in tags):
         raise ValueError("Provide at most 12 tags, each no longer than 64 characters.")
+    if kind not in KINDS:
+        raise ValueError("Unknown memory kind.")
+    if memory_key is not None:
+        _validate_scope(memory_key)
+    if kind == "checkpoint" and scope == "project":
+        raise ValueError("Give checkpoints a named task scope.")
+    if evidence and len(evidence) > 500:
+        raise ValueError("Evidence must be at most 500 characters.")
+    if kind == "repo_fact" or source_path is not None or source_sha256 is not None:
+        if not source_path or not source_sha256 or source_hash(source_path) != source_sha256:
+            raise ValueError("Provide a current workspace-relative source path and SHA-256 from a repo tool.")
 
     _ensure_collection()
-    memory_id = str(uuid.uuid4())
+    # A checkpoint replaces the previous checkpoint for the task. Repeated durable saves deduplicate.
+    identity = (scope, kind, None if kind == "checkpoint" else (content, source_path))
+    if memory_key is not None and kind != "checkpoint":
+        identity = (scope, kind, "key", memory_key)
+    memory_id = str(uuid.uuid5(uuid.NAMESPACE_URL, repr((PROJECT, identity))))
+    now = datetime.now(timezone.utc)
+    payload = {
+        "project_id": PROJECT, "scope": scope, "kind": kind, "content": content,
+        "tags": tags, "created_at": now.isoformat(), "evidence": evidence,
+        "source_path": source_path, "source_sha256": source_sha256, "memory_key": memory_key,
+    }
+    if kind == "checkpoint":
+        payload["expires_at"] = int(now.timestamp()) + 7 * 86400
     client.upsert(
         collection_name=COLLECTION,
-        points=[
-            models.PointStruct(
-                id=memory_id,
-                vector=_embed(content),
-                payload={
-                    "content": content,
-                    "scope": scope,
-                    "tags": tags,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-        ],
+        points=[models.PointStruct(id=memory_id, vector=_embed(content), payload=payload)],
         wait=True,
     )
     return memory_id
 
 
-def search_memories(
-    query: str, scope: str | None = None, limit: int = 5
-) -> list[dict[str, Any]]:
+def search_memories(query: str, scope: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
     query = query.strip()
-    if not query:
-        raise ValueError("Search query cannot be empty.")
-    if len(query) > 2000:
-        raise ValueError("Search query must be 2,000 characters or fewer.")
+    if not query or len(query) > 2000:
+        raise ValueError("Provide 1–2,000 query characters.")
     limit = max(1, min(limit, 10))
-    query_filter = None
+    query_filter = project_filter()
     if scope is not None:
-        query_filter = models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="scope",
-                    match=models.MatchValue(value=_validate_scope(scope)),
-                )
-            ]
-        )
+        query_filter.must.append(models.FieldCondition(
+            key="scope", match=models.MatchValue(value=_validate_scope(scope)),
+        ))
+    query_filter.must_not = [models.FieldCondition(
+        key="expires_at", range=models.Range(lte=int(datetime.now(timezone.utc).timestamp())),
+    )]
+    if scope in (None, "project"):
+        query_filter.must_not.append(models.FieldCondition(
+            key="kind", match=models.MatchValue(value="checkpoint"),
+        ))
     _ensure_collection()
     response = client.query_points(
-        collection_name=COLLECTION,
-        query=_embed(query),
-        query_filter=query_filter,
-        limit=limit,
-        with_payload=True,
+        collection_name=COLLECTION, query=_embed(query), query_filter=query_filter,
+        limit=min(30, limit * 3), with_payload=True,
     )
-    return [
-        {
-            "id": str(point.id),
-            "score": point.score,
-            "content": (point.payload or {}).get("content", ""),
-            "scope": (point.payload or {}).get("scope", ""),
-            "tags": (point.payload or {}).get("tags", []),
-            "created_at": (point.payload or {}).get("created_at", ""),
-        }
-        for point in response.points
-    ]
+    results = []
+    for point in response.points:
+        payload = dict(point.payload or {})
+        if payload.get("source_path") and source_hash(payload["source_path"]) != payload["source_sha256"]:
+            continue
+        payload.pop("project_id", None)
+        results.append({"id": str(point.id), "score": point.score, **payload})
+        if len(results) == limit:
+            break
+    return results
 
 
 def forget_memory(memory_id: str) -> None:
     try:
-        uuid.UUID(memory_id)
+        memory_id = str(uuid.UUID(memory_id))
     except ValueError as exc:
-        raise ValueError("Memory ID must be a UUID returned by save_memory or search_memories.") from exc
+        raise ValueError("Memory ID must be a UUID returned by a memory tool.") from exc
     _ensure_collection()
     client.delete(
         collection_name=COLLECTION,
-        points_selector=models.PointIdsList(points=[memory_id]),
+        points_selector=models.FilterSelector(filter=project_filter(models.HasIdCondition(has_id=[memory_id]))),
         wait=True,
     )

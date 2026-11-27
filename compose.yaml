@@ -10,8 +10,10 @@ services:
       DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD in .env}@litellm-db:5432/litellm
       LLAMA_API_BASE: ${LLAMA_API_BASE:-http://llama-server:8080/v1}
       LLAMA_API_KEY: ${LLAMA_API_KEY:-local-no-auth}
+      LOCAL_MODEL_ALIAS: ${LOCAL_MODEL_ALIAS:-${DEFAULT_MODEL:-gemma-4-12b}}
     volumes:
       - ./config/litellm.yaml:/app/config.yaml:ro
+      - ./config/openhands_chat.py:/app/openhands_chat.py:ro
     depends_on:
       litellm-db:
         condition: service_healthy
@@ -136,18 +138,32 @@ services:
     restart: unless-stopped
 
   openhands:
-    image: ghcr.io/openhands/agent-canvas:1.43.0
+    build: ./services/openhands
+    image: local-ai-openhands:1.43.0
     profiles: ["openhands"]
-    user: "0:0"
+    user: "10001:10001"
     ports:
       - "127.0.0.1:9010-9012:9010-9012"
     group_add:
       - "${OPENHANDS_WORKSPACE_GID:-1000}"
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_RESOURCE
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
     environment:
       HOME: /home/openhands
       PORT: "8000"
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${OPENHANDS_WORKSPACE_PATH:-/projects}
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /projects
       OPENHANDS_HOST_HOME: ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}
       OPENHANDS_WORKSPACE_PATH: ${OPENHANDS_WORKSPACE_PATH:-/projects}
+      OPENHANDS_HOST_TERMINAL_ENABLED: ${OPENHANDS_HOST_TERMINAL_ENABLED:-false}
       LLM_MODEL: litellm_proxy/local-model
       LLM_BASE_URL: http://litellm:4000/v1
       LLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
@@ -165,22 +181,12 @@ services:
       - openhands-state:/home/openhands/.openhands
       - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
       - ${WORKSPACE_DIR:-./workspace}:${OPENHANDS_WORKSPACE_PATH:-/projects}:${OPENHANDS_WORKSPACE_MODE:-rw}
-      - ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
-      - /:/host:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
+      - ./runtime/openhands-host:/run/openhands-host:ro
       - ./runtime/openhands-npm-cache:/home/openhands/.npm
       - ./runtime/openhands-npm-global:/home/openhands/.local/npm
       - ./runtime/mcp-packages.json:/home/openhands/.local/mcp-packages.json:ro
-    working_dir: ${OPENHANDS_WORKSPACE_PATH:-/projects}
+    working_dir: /home/openhands
     read_only: ${OPENHANDS_READ_ONLY_ROOT:-false}
-    cap_add:
-      - SYS_RESOURCE
-      - SYS_ADMIN
-      - DAC_OVERRIDE
-      - DAC_READ_SEARCH
-    cap_drop:
-      - ALL
-    security_opt:
-      - seccomp=unconfined
     pids_limit: 512
     mem_limit: ${OPENHANDS_MEMORY_LIMIT:-16g}
     cpus: ${OPENHANDS_CPU_LIMIT:-8}
@@ -193,6 +199,8 @@ services:
       memory-mcp:
         condition: service_started
       file-edit-mcp:
+        condition: service_started
+      repo-context-mcp:
         condition: service_started
     restart: unless-stopped
 
@@ -245,9 +253,31 @@ services:
       EMBEDDING_URL: http://embedding-server:8081/v1
       EMBEDDING_MODEL: bge-small-en-v1.5
       EMBEDDING_DIMENSIONS: "384"
+      MEMORY_PROJECT: ${WORKSPACE_DIR:-./workspace}
+    volumes:
+      - ${WORKSPACE_DIR:-./workspace}:/projects:ro
     depends_on:
       - qdrant
       - embedding-server
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - local
+    restart: unless-stopped
+
+  repo-context-mcp:
+    build: ./services/repo-context-mcp
+    profiles: ["openhands"]
+    environment:
+      ENABLE_WEB_SEARCH: ${ENABLE_WEB_SEARCH:-true}
+      WEB_LOADER_API_KEY: ${WEB_LOADER_API_KEY:-}
+    volumes:
+      - ${WORKSPACE_DIR:-./workspace}:/projects:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -269,8 +299,6 @@ services:
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
       - ${WORKSPACE_DIR:-./workspace}:${OPENHANDS_WORKSPACE_PATH:-/projects}:${OPENHANDS_WORKSPACE_MODE:-rw}
-      - ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
-      - /:/host:${OPENHANDS_HOST_FILESYSTEM_MODE:-rw}
     networks:
       - local
     restart: unless-stopped

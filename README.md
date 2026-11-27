@@ -142,13 +142,48 @@ sandbox level — combine it with any mode that permits commands. The default is
 
 Qdrant stores data in a persistent Docker volume. The local BGE-small model creates 384-dimensional embeddings without sending content to a remote service. Open WebUI document retrieval and explicit memory tools use this Qdrant server, with separate collections.
 
-OpenHands durable memory is **explicit**, not an automatic transcript recorder. Startup automatically registers its memory tools (search, save, and delete) against Qdrant's `openhands_memories` collection. The same memory server and the local web-search server are registered in Open WebUI. Choose enabled local tools in the chat's tool picker when you want a conversation to use them. Open WebUI tool-server access is admin-only by default; an admin can share a connection with other users in its access settings. Memory tools can save and delete shared memories, so share only with trusted users.
+OpenHands durable memory uses the `openhands_memories` Qdrant collection. The memory service binds reads, writes, and deletes to the configured `WORKSPACE_DIR`. Scope names group items inside that workspace. Save durable decisions and preferences explicitly. Repo facts require a workspace-relative source path and SHA-256, and search skips them if the source changes. Give task checkpoints a named scope, then query that scope when resuming. Saving a new checkpoint replaces the previous one for that task, and checkpoints expire from search after seven days. Reuse a stable `memory_key` in the same kind and scope to update a durable record.
+
+Older records stay in Qdrant until reviewed. Use the following commands to review them and adopt only IDs that belong to the active workspace:
+
+```sh
+docker compose exec memory-mcp python -m app.review_legacy
+docker compose exec memory-mcp python -m app.review_legacy --adopt MEMORY_UUID
+```
+
+Open WebUI can use the same memory server through its tool picker. Share that connection only with users who should have access to this workspace's memories.
 
 OpenHands also has a `local-file-edit` MCP with line-numbered reads, exact or whitespace-tolerant replacements, helpful mismatch excerpts, and hash-guarded multi-file edits. `search_files` finds candidate paths and hashes; `bulk_edit` validates every target before applying the changes. Creating a file refuses to overwrite an existing one. The helper runs as a separate service using a pinned MCP SDK and can reach the WSL filesystem through `/host`.
 
 Ask an agent to save useful decisions deliberately; never save credentials, tokens, or private personal information. Search results are reference data, not trusted instructions. Memory and search MCPs are private to the Docker network; only the Browser MCP relay is published, and only on host loopback.
 
 For uploaded documents, use Open WebUI's **Workspace > Knowledge** feature to create a knowledge base and add documents. The stack configures Qdrant and the local embedding endpoint by default. Existing knowledge bases and explicit memories are separate: uploaded documents are indexed into Open WebUI's own collection, while MCP memories are saved only when a tool is called.
+
+### Repository evidence for OpenHands
+
+Backend startup registers `local-repo-context` with a read-only mount of the configured Git workspace. The owner backend default LLM profile is created and activated by [the OpenHands startup configuration](scripts/configure-openhands-defaults.sh). The portable client has its own startup script and Compose configuration under `client/`.
+
+| Tool | Evidence returned |
+|---|---|
+| `repo_search` | Live tracked paths and excerpts with hashes, line ranges, and HEAD revision. Hybrid mode combines lexical matches with local BGE embeddings. |
+| `symbol_lookup` | Python definitions, JS/TS declaration matches, and candidate textual references. |
+| `docs_lookup` | Local dependency declarations and official release links for covered packages. Supply a confirmed installed version to fetch matching release notes through the existing guarded web loader. |
+| `check_changes` | A receipt for Git status, Git whitespace checks, or tracked Python syntax checks. Run project test suites through the terminal. |
+
+On this deployment repository, `repo_search` defaults to the owner backend scope. Use `scope=client` for the portable client and `scope=all` to search both. Hybrid search warms its semantic cache on demand and reports whether it is ready. It embeds up to 400 source chunks per workspace snapshot. Exact search remains available while embeddings load and checks the current contents of tracked files, including unstaged edits. The repo tools skip untracked files, symlinks, and common secret or generated paths. Use direct file reads for a newly created file before it is tracked.
+
+The owner terminal includes Bash, Git, and ripgrep and starts in the mounted checkout. It runs inside the Canvas container, so the installed software and shell startup configuration can differ from the WSL terminal. Use the short `revision` from `read_file_lines` with `replace_text` to guard edits to host files. The edit preserves the file's ownership and mode.
+
+For owner OpenHands requests using `gpt-oss-20b`, the LiteLLM compatibility hook keeps native action calls and lets final responses arrive as normal messages. It also pauses a search tool for the rest of a turn after the agent repeats the same search, leaving the other tools available.
+
+Run the MCP integration checks and verify the running Canvas agent from this checkout:
+
+```sh
+docker compose --profile openhands exec -T openhands python - < scripts/verify-openhands-tools.py
+./scripts/verify-openhands-canvas.sh
+```
+
+The Canvas check runs ten repository tasks, then verifies search and fetch, reading and editing a host-owned file, and running commands in the mounted checkout. The SDK comparison is also available in `scripts/eval-openhands-repo.py`.
 
 ## Web search
 
