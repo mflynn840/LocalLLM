@@ -2,19 +2,19 @@
   const picker = document.createElement("details");
   picker.className = "local-execution-picker";
   picker.innerHTML = `
-    <summary aria-label="Execution mode for new conversations">Execution: Docker</summary>
+    <summary aria-label="Execution mode for new conversations">Execution: My PC (WSL)</summary>
     <div class="local-execution-menu">
       <strong>Run new chats in</strong>
       <button type="button" data-mode="docker">Docker</button>
       <button type="button" data-mode="wsl" disabled>My PC (WSL)</button>
-      <p>My PC uses your WSL user, shell, tools, and files. Docker stays in the mounted project.</p>
+      <p>My PC (WSL) runs commands as your WSL user and can access your files. Docker stays in the mounted project.</p>
       <span role="status" aria-live="polite"></span>
     </div>`;
   const summary = picker.querySelector("summary");
   const status = picker.querySelector("[role=status]");
   const buttons = [...picker.querySelectorAll("button")];
   const host = buttons.find((button) => button.dataset.mode === "wsl");
-  const saved = () => document.cookie.split(";").some((value) => value.trim() === "openhands_terminal=wsl");
+  const saved = () => !document.cookie.split(";").some((value) => value.trim() === "openhands_terminal=docker");
   const display = () => {
     summary.textContent = saved() ? "Execution: My PC (WSL)" : "Execution: Docker";
     for (const button of buttons) {

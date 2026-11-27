@@ -47,9 +47,12 @@ MODEL_SERVER_URL=$server_url
 MODEL_API_KEY=$api_key
 LOCAL_BACKEND_API_KEY=$local_key
 CLIENT_OPENHANDS_PORT=${CLIENT_OPENHANDS_PORT:-8000}
+CLIENT_WORKSPACE_HOST_PATH=$ROOT/workspace
 EOF
 chmod 600 .env
 unset api_key local_key
+
+bash "$ROOT/../scripts/openhands-host-terminal.sh" "$ROOT/workspace" start
 
 docker compose --env-file .env -f compose.yaml up -d --wait
 docker compose --env-file .env -f compose.yaml exec -T openhands python - <<'PY'
@@ -95,8 +98,45 @@ method = "PATCH" if name in current else "POST"
 req(path, method, {"url": os.environ["REMOTE_WEB_SEARCH_MCP_URL"],
                    "transport": "streamable-http", "enabled": True,
                    "description": "Backend SearXNG search and guarded public-page fetch"})
+ssh_name = "ssh-hosts"
+ssh_path = settings + "/mcp/" + urllib.parse.quote(ssh_name, safe="")
+ssh_method = "PATCH" if ssh_name in current else "POST"
+req(ssh_path, ssh_method, {
+    "command": "/usr/local/bin/python", "args": ["/opt/agent-canvas/ssh-mcp.py"],
+    "transport": "stdio", "enabled": True,
+    "description": "Named SSH targets and remote commands/file transfers; SSH keys stay on this PC"
+})
+guidance_marker = "<openhands-host-and-ssh-workflow>"
+guidance = (guidance_marker + "\n" +
+    "Default to My PC (WSL): read, edit, and execute directly on the host as the WSL user. "
+    "Use Docker execution only when the user explicitly asks for it. If the user asks for Jetson work, "
+    "use ssh-hosts MCP: list hosts, refresh the remote map with ssh_map_files, search with ssh_search_files, then "
+    "use ssh_exec, ssh_read_file, and ssh_write_file with host key jetson. Keep all inspection, edits, and commands "
+    "for the SSH task on that host; do not switch to local workspace tools. SSH credentials remain on this PC.\n" +
+    "</openhands-host-and-ssh-workflow>")
+settings_data = req(settings)
+agent_settings = settings_data.get("agent_settings", {})
+context = agent_settings.get("agent_context") or {}
+suffix = context.get("system_message_suffix") or ""
+import re
+suffix = re.sub(re.escape(guidance_marker) + r".*?</openhands-host-and-ssh-workflow>", "", suffix, flags=re.S).strip()
+context["system_message_suffix"] = (suffix + "\n\n" + guidance).strip()
+req(settings, "PATCH", {"agent_settings_diff": {"agent_context": context}})
+profiles_url = "http://127.0.0.1:18000/api/agent-profiles"
+for profile_info in req(profiles_url).get("profiles", []):
+    name = profile_info.get("name")
+    if not name:
+        continue
+    detail = req(profiles_url + "/" + urllib.parse.quote(name, safe=""))
+    profile = detail.get("profile", {})
+    if profile.get("agent_kind") == "acp":
+        continue
+    current_suffix = profile.get("system_message_suffix") or ""
+    current_suffix = re.sub(re.escape(guidance_marker) + r".*?</openhands-host-and-ssh-workflow>", "", current_suffix, flags=re.S).strip()
+    profile["system_message_suffix"] = (current_suffix + "\n\n" + guidance).strip()
+    req(profiles_url + "/" + urllib.parse.quote(name, safe=""), "POST", profile)
 PY
 
 echo "Client OpenHands is ready at http://localhost:${CLIENT_OPENHANDS_PORT:-8000}/canvas"
-echo "Workspace: $ROOT/workspace (only this folder is mounted into the agent)."
+echo "Workspace: $ROOT/workspace. My PC (WSL) execution can work across files accessible to your WSL user."
 echo "Internet search and guarded page fetch use the backend's local search service."

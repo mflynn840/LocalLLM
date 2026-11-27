@@ -2,7 +2,8 @@ name: local-ai-client
 
 services:
   openhands:
-    image: ghcr.io/openhands/agent-canvas:1.43.0
+    build: ../services/openhands
+    image: local-ai-openhands:1.43.0
     user: "0:0"
     ports:
       - "127.0.0.1:${CLIENT_OPENHANDS_PORT:-8000}:8000"
@@ -17,10 +18,13 @@ services:
       AGENT_CANVAS_DISABLE_TELEMETRY: "1"
       OPENHANDS_ALLOW_COMMANDS: "true"
       OPENHANDS_REQUIRE_APPROVAL: "false"
+      OPENHANDS_HOST_TERMINAL_ENABLED: "true"
+      OPENHANDS_HOST_WORKSPACE_PATH: ${CLIENT_WORKSPACE_HOST_PATH:-/projects}
       DO_NOT_TRACK: "1"
     volumes:
       - openhands-state:/home/openhands/.openhands
       - ./workspace:/projects:rw
+      - ../runtime/openhands-host:/run/openhands-host:ro
     pids_limit: 512
     restart: unless-stopped
 

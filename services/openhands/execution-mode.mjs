@@ -33,7 +33,11 @@ function json(res, status, data) {
 }
 
 function isHostCookie(req) {
-  return (req.headers.cookie ?? "").split(";").some((value) => value.trim() === `${cookie}=wsl`);
+  const selected = (req.headers.cookie ?? "").split(";").map((value) => value.trim())
+    .find((value) => value.startsWith(`${cookie}=`));
+  // The owner Canvas edits files as the WSL user by default. Docker remains an
+  // explicit opt-in for isolated project-only work.
+  return !selected || selected === `${cookie}=wsl`;
 }
 
 function cookieValue(req, name) {
@@ -59,6 +63,38 @@ function appendGuidance(settings, guidance) {
   if (!suffix.includes(guidance)) {
     settings.agent_context.system_message_suffix = [suffix, guidance].filter(Boolean).join("\n\n");
   }
+}
+
+function initialMessageText(payload) {
+  const content = payload?.initial_message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => typeof part === "string" ? part : (part?.text || "")).join("\n");
+}
+
+function inferredSshHost(payload) {
+  const text = initialMessageText(payload).toLowerCase();
+  return /\bjetson\b/.test(text) ? "jetson" : "";
+}
+
+function applySshRoute(payload, host) {
+  if (!host) return;
+  const settings = launchSettings(payload);
+  // Profile launches are narrowed after profile resolution by local_execution.py.
+  if (!settings && usesAgentProfile(payload)) return;
+  if (!settings) throw new Error("SSH routing requires an OpenHands settings profile.");
+  const ssh = settings.mcp_config?.["ssh-hosts"];
+  if (!ssh) throw new Error("The ssh-hosts MCP is not configured for this profile.");
+  settings.mcp_config = { "ssh-hosts": ssh };
+  settings.tools = (settings.tools || []).filter((tool) =>
+    ["task_tracker", "TaskTrackerTool"].includes(tool?.name));
+  appendGuidance(settings,
+    `<ssh-task-route>\nThis conversation is pinned to SSH host key ${host}. ` +
+    "Use only ssh-hosts MCP tools for discovery, file mapping, search, reads, writes, commands, and verification. " +
+    "Start with ssh_hosts and ssh_map_files. Do not inspect or modify the local workspace and do not use terminal, " +
+    "local file editing, or local repository tools. All paths mentioned by the user are paths on the SSH host. " +
+    "The saved host key selects the connection; use ssh_exec with hostname when the actual system hostname is requested.\n" +
+    "</ssh-task-route>");
 }
 
 function applyWslTerminal(payload) {
@@ -91,8 +127,10 @@ function applyWslTerminal(payload) {
   if (settings.llm?.base_url) settings.llm.base_url = settings.llm.base_url.replace(/\/v1\/?$/, "");
   appendGuidance(settings,
     "My PC (WSL) mode is active for this conversation. The terminal runs as the WSL user in the host distribution. " +
-    "Use host absolute paths directly with the terminal for files outside the project; Docker file tools cannot read those paths. " +
-    "For project paths, use the mounted project path and the revision-guarded file tools when available.");
+    "Use the host terminal directly for file reads, edits, and commands, including files in the project. " +
+    "Use Docker-mounted file tools only when Docker mode is explicitly selected. " +
+    "For a requested SSH task, use only ssh-hosts MCP tools for inspection, file edits, commands, and verification; " +
+    "stay on that SSH host until the task is complete.");
 }
 
 function applyModelSelection(payload, alias, quant, context, effort) {
@@ -155,6 +193,8 @@ async function launchConversation(req, res, backend) {
     return;
   }
   payload.tags = { ...payload.tags };
+  const sshHost = inferredSshHost(payload);
+  if (sshHost) payload.tags.sshhost = sshHost;
   if (hostMode) {
     payload.tags.localterminal = "wsl";
     // A host shell cannot run in a per-conversation Docker worktree. Keep the
@@ -174,6 +214,7 @@ async function launchConversation(req, res, backend) {
   if (reasoningEfforts.has(effort)) payload.tags.localeffort = effort;
   try {
     if (hostMode) applyWslTerminal(payload);
+    applySshRoute(payload, sshHost);
     if (model) applyModelSelection(payload, model, quant, context, effort);
   } catch (error) {
     json(res, 400, { detail: error.message });

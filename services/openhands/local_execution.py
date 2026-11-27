@@ -40,23 +40,20 @@ def apply_terminal_mode(source, request):
     context = settings.agent_context or AgentContext()
     suffix = (context.system_message_suffix or "") + (
         "\n<local-openhands-tools>\n"
-        "The user selected My PC (WSL) for this conversation. The terminal runs as the "
+        "The user selected My PC (WSL) for this conversation (the owner default). The terminal runs as the "
         "owner's normal WSL user in the exact host working directory, with that user's "
-        "shell startup files, installed tools, and filesystem permissions. Use the "
-        "For Jetson requests, read .openhands/skills/jetson-connect/SKILL.md in the "
-        "project workspace and use jetson-host_jetson_exec for remote commands and "
-        "jetson_write_file for project files when the user explicitly asks to work on "
-        "the Jetson. These tools operate remotely through the host bridge. Never use "
-        "local cp, scp, or ssh from the workspace to reach the Jetson. jetson_write_file "
-        "writes files under /home/michael/Code/task1 and creates parent directories. "
-        "Preserve "
-        "user data and SSD contents unless the user explicitly requests a destructive "
-        "storage operation. Use /home/michael/AI/jetson/connect_jetson.sh in My PC "
-        "(WSL) mode only for USB-network setup or when the MCP tool is unavailable. "
-        "terminal for any host path, including files outside the mounted project. "
-        "Within the mounted project, use the revision-guarded local-file-edit tools "
-        "for file changes when available; use the terminal to create directories with "
-        "mkdir -p before creating files. Never remove or recreate a project to recover "
+        "shell startup files, installed tools, and filesystem permissions. In this mode "
+        "use the host terminal directly for file reads, edits, and commands, including "
+        "files in the mounted project; use Docker-mounted file tools only when Docker "
+        "mode is explicitly selected. For explicit SSH work, use the ssh-hosts MCP: "
+        "list hosts, refresh the remote map with ssh_map_files, search with ssh_search_files, "
+        "and use ssh_exec, ssh_read_file, and ssh_write_file for every command or edit. "
+        "Keep that task on the requested SSH host from inspection through verification; "
+        "do not switch to local workspace, Docker, or local repository tools midway. "
+        "Never copy remote project code to the local workspace unless the user asks. "
+        "The Jetson key is jetson; its host bridge prepares USB networking and keeps "
+        "credentials on WSL. Preserve remote data unless removal is requested. "
+        "Never remove or recreate a project to recover "
         "from one file error. Read the complete error, correct the specific issue, and "
         "continue. For multi-step work, keep a checklist and verify each deliverable "
         "with the requested commands before reporting completion. Check installed "
@@ -65,6 +62,44 @@ def apply_terminal_mode(source, request):
     )
     return replace(source, settings=settings.model_copy(update={
         "tools": tools,
+        "agent_context": context.model_copy(update={"system_message_suffix": suffix}),
+    }))
+
+
+def apply_ssh_route(source, request):
+    """Pin an explicitly remote conversation to one SSH host and tool server."""
+    host = (request.tags or {}).get("sshhost")
+    if not host:
+        return source
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}", host):
+        raise AgentLaunchError("The inferred SSH host key is invalid.")
+    if not isinstance(source, ResolvedLaunch) or not isinstance(source.settings, OpenHandsAgentSettings):
+        raise AgentLaunchError("Select an OpenHands profile to use automatic SSH routing.")
+
+    settings = source.settings
+    ssh_server = settings.mcp_config.get("ssh-hosts")
+    if ssh_server is None:
+        raise AgentLaunchError("The ssh-hosts MCP is unavailable in the selected profile.")
+
+    tools = [
+        tool for tool in resolve_tool_specs(settings.tools)
+        if tool.name in {"task_tracker", "TaskTrackerTool"}
+    ]
+    context = settings.agent_context or AgentContext()
+    suffix = (context.system_message_suffix or "") + (
+        "\n<ssh-task-route>\n"
+        f"This conversation is pinned to SSH host key {host}. Use only ssh-hosts "
+        "MCP tools for discovery, file mapping, search, reads, writes, commands, and "
+        "verification. Start with ssh_hosts and ssh_map_files. Do not inspect or modify "
+        "the local workspace and do not use terminal, local file editing, or local "
+        "repository tools. All paths mentioned by the user are paths on the SSH host. "
+        "The saved host key selects the connection; use ssh_exec with hostname when "
+        "the actual system hostname is requested. Stay on this host through completion.\n"
+        "</ssh-task-route>"
+    )
+    return replace(source, settings=settings.model_copy(update={
+        "tools": tools,
+        "mcp_config": {"ssh-hosts": ssh_server},
         "agent_context": context.model_copy(update={"system_message_suffix": suffix}),
     }))
 
@@ -123,4 +158,6 @@ def apply_model_selection(source, request):
 
 
 def apply_launch_overrides(source, request):
-    return apply_terminal_mode(apply_model_selection(source, request), request)
+    source = apply_model_selection(source, request)
+    source = apply_terminal_mode(source, request)
+    return apply_ssh_route(source, request)

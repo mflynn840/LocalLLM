@@ -8,6 +8,34 @@ UNIT="localllm-openhands-host-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12).se
 case "${2:-start}" in
     start)
         mkdir -p "$DIR"
+        python3 - "$ROOT/runtime/openhands-ssh-hosts.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        hosts = json.load(handle)
+except FileNotFoundError:
+    hosts = {}
+jetson = hosts.setdefault("jetson", {
+    "target": "jetson", "port": 22,
+    "description": "NVIDIA Jetson development host (USB SSH alias)",
+    "metadata": {},
+})
+jetson.setdefault("target", "jetson")
+jetson.setdefault("port", 22)
+jetson.setdefault("description", "NVIDIA Jetson development host (USB SSH alias)")
+metadata = jetson.setdefault("metadata", {})
+metadata.setdefault("platform", "NVIDIA Jetson")
+metadata.setdefault("connection", "WSL SSH alias; USB networking prepared automatically")
+metadata.setdefault("home", "/home/michael")
+metadata.setdefault("default_project_root", "/home/michael/Code/task1")
+os.makedirs(os.path.dirname(path), exist_ok=True)
+temporary = path + ".tmp"
+with open(temporary, "w", encoding="utf-8") as handle:
+    json.dump(hosts, handle, ensure_ascii=False, indent=2)
+os.chmod(temporary, 0o600)
+os.replace(temporary, path)
+PY
         chgrp "$(id -g)" "$DIR"
         chmod 2770 "$DIR"
         if [[ -S "$SOCKET" ]] && systemctl --user is-active --quiet "$UNIT"; then

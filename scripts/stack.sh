@@ -30,8 +30,13 @@ ensure_env() {
     lan_ip=""
     if ! grep -qE '^BACKEND_PUBLIC_URL=http://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:' "$ROOT/.env" 2>/dev/null; then
         lan_ip="$(bash "$ROOT/scripts/detect-lan-ip.sh" 2>/dev/null || true)"
+    # Auto-detect whether this machine is the Jetson backend host.
+    running_on_jetson="false"
+    if bash "$ROOT/scripts/detect-jetson.sh" >/dev/null 2>&1; then
+        running_on_jetson="true"
     fi
-    python3 - "$ROOT/.env" "$lan_ip" <<'PY'
+    fi
+    python3 - "$ROOT/.env" "$lan_ip" "$running_on_jetson" <<'PY'
 import os
 import secrets
 import sys
@@ -39,6 +44,7 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 lan_ip = sys.argv[2]
+running_on_jetson = sys.argv[3]
 lines = path.read_text(encoding="utf-8").splitlines()
 values = {
     line.split("=", 1)[0]: line.split("=", 1)[1]
@@ -65,7 +71,7 @@ for name in (
         lines[indices[-1]] = prefix + value
     else:
         lines.append(prefix + value)
-for name, default in (("BACKEND_BIND_ADDRESS", "0.0.0.0"), ("OPENHANDS_BIND_ADDRESS", "127.0.0.1")):
+for name, default in (("BACKEND_BIND_ADDRESS", "0.0.0.0"), ("OPENHANDS_BIND_ADDRESS", "127.0.0.1"), ("RUNNING_ON_JETSON", "false")):
     prefix = name + "="
     if not any(line.startswith(prefix) for line in lines):
         lines.append(prefix + default)

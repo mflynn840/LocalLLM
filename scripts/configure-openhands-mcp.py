@@ -175,15 +175,16 @@ def configure():
     )
 
     save_server(
-        "jetson-host",
+        "ssh-hosts",
         {
             "command": "/usr/local/bin/python",
-            "args": ["/opt/agent-canvas/jetson-mcp.py"],
+            "args": ["/opt/agent-canvas/ssh-mcp.py"],
             "transport": "stdio",
             "enabled": True,
-            "description": "Use on explicit Jetson requests; SSH as michael with sudo access through the host",
+            "description": "Manage named SSH hosts and run remote commands and file transfers through the WSL host; SSH keys stay on the host",
         },
     )
+    set_enabled("jetson-host", False)
 
     for record in load_installed_servers():
         save_server(record["id"], record["server"])

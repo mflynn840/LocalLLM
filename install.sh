@@ -82,6 +82,14 @@ if [[ -z "${lan_ip:-}" ]]; then
 fi
 litellm_port="${LITELLM_PORT:-4000}"
 
+# Auto-detect whether this machine is the Jetson backend host. When running on
+# the Jetson itself, OpenHands should not use the jetson-host MCP tool to
+# operate on the Jetson — it is already there.
+running_on_jetson="false"
+if bash "$ROOT/scripts/detect-jetson.sh" >/dev/null 2>&1; then
+    running_on_jetson="true"
+fi
+
 default_model="${DEFAULT_MODEL-gemma-4-12b}"
 default_quant="${DEFAULT_QUANT-Q4_K_M}"
 persist_defaults=0
@@ -114,7 +122,7 @@ for spec in "${model_specs[@]:1}"; do
     download_args+=(--model "$spec")
 done
 
-python3 - "$ENV_FILE" "$ROOT" "$default_model" "$default_quant" "$persist_defaults" "$lan_ip" "$litellm_port" <<'PY'
+python3 - "$ENV_FILE" "$ROOT" "$default_model" "$default_quant" "$persist_defaults" "$lan_ip" "$litellm_port" "$running_on_jetson" <<'PY'
 import os
 import secrets
 import sys
@@ -126,6 +134,7 @@ default_model, default_quant = sys.argv[3:5]
 persist_defaults = sys.argv[5] == "1"
 lan_ip = sys.argv[6]
 litellm_port = sys.argv[7]
+running_on_jetson = sys.argv[8]
 lines = env_file.read_text(encoding="utf-8").splitlines()
 values = {
     line.split("=", 1)[0]: line.split("=", 1)[1]
@@ -155,6 +164,7 @@ replacements = {
         "http://<BACKEND_LAN_IP>:4001",
         f"http://{lan_ip}:{litellm_port}" if lan_ip else "http://<BACKEND_LAN_IP>:4001",
     ),
+    "RUNNING_ON_JETSON": ("false", running_on_jetson),
 }
 for key, (placeholder, generated) in replacements.items():
     current = values.get(key, "").strip().strip("\"'")
