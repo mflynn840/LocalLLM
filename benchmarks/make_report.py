@@ -98,7 +98,9 @@ def main():
         gpu_mib = float(r["gpu_model_mib"]) if r.get("gpu_model_mib") else 0
         ratio = gpu_mib * 1024 * 1024 / weight_bytes if weight_bytes else 0
         placement = "RAM offload" if ratio < 0.70 else "GPU-resident; small host buffers"
-        lines.append(f'| {model} | {r["quant"]} | {int(r["native_context_tokens"]):,} | {gpu_mib:,.0f} / {weight_bytes / 1048576:,.0f} MiB | {cpu_mib:,.0f} MiB | {placement} |')
+        native_context = r.get("native_context_tokens")
+        native_context = f"{int(native_context):,}" if native_context else "not recorded"
+        lines.append(f'| {model} | {r["quant"]} | {native_context} | {gpu_mib:,.0f} / {weight_bytes / 1048576:,.0f} MiB | {cpu_mib:,.0f} MiB | {placement} |')
     lines += ["", "## Throughput by context", "", "### Prefill", "", "Tokens per second while ingesting a prompt of the listed size. Both chart axes use logarithmic scaling:", "", "![Prefill throughput](prefill.svg)", "", "| Model | Context | Prefill tok/s (SD where repeated) |", "|---|---:|---:|"]
     for model in models:
         for context in CONTEXTS:

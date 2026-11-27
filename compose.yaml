@@ -21,6 +21,18 @@ services:
       - local
     restart: unless-stopped
 
+  openhands-model-queue:
+    image: node:22-alpine
+    profiles: ["openhands"]
+    command: ["node", "/app/model-queue.mjs"]
+    environment:
+      OPENHANDS_MODEL_SERVER_URL: ${OPENHANDS_MODEL_SERVER_URL:-http://llama-server:8080}
+    volumes:
+      - ./services/openhands/model-queue.mjs:/app/model-queue.mjs:ro
+    networks:
+      - local
+    restart: unless-stopped
+
   litellm-db:
     image: postgres:16-alpine
     environment:
@@ -34,6 +46,30 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    networks:
+      - local
+    restart: unless-stopped
+
+  openhands-llm-gateway:
+    image: ghcr.io/berriai/litellm:main-stable
+    profiles: ["openhands"]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY in .env}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD in .env}@litellm-db:5432/litellm
+      LLAMA_API_BASE: ${LLAMA_API_BASE:-http://llama-server:8080/v1}
+      LLAMA_API_KEY: ${LLAMA_API_KEY:-local-no-auth}
+      OPENHANDS_QUEUE_API_BASE: http://openhands-model-queue:8080/v1
+      LOCAL_MODEL_ALIAS: ${LOCAL_MODEL_ALIAS:-${DEFAULT_MODEL:-gemma-4-12b}}
+    volumes:
+      - ./runtime/litellm-router.yaml:/app/config.yaml:ro
+      - ./config/openhands_chat.py:/app/openhands_chat.py:ro
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+      openhands-model-queue:
+        condition: service_started
     networks:
       - local
     restart: unless-stopped
@@ -164,9 +200,13 @@ services:
       OPENHANDS_HOST_HOME: ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}
       OPENHANDS_WORKSPACE_PATH: ${OPENHANDS_WORKSPACE_PATH:-/projects}
       OPENHANDS_HOST_TERMINAL_ENABLED: ${OPENHANDS_HOST_TERMINAL_ENABLED:-false}
-      LLM_MODEL: litellm_proxy/local-model
-      LLM_BASE_URL: http://litellm:4000/v1
+      LLM_MODEL: ${OPENHANDS_DEFAULT_MODEL_ID:-litellm_proxy/local-model}
+      LLM_BASE_URL: http://openhands-llm-gateway:4000/v1
       LLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev-change-me}
+      OPENHANDS_MODEL_SERVER_URL: ${OPENHANDS_MODEL_SERVER_URL:-http://llama-server:8080}
+      OPENHANDS_MODEL_CATALOG_PATH: /opt/local-models/models.tsv
+      OPENHANDS_MODEL_CONTEXT_MAX: ${CONTEXT_SIZE:-8192}
+      OPENHANDS_DEFAULT_MODEL_ALIAS: ${OPENHANDS_DEFAULT_MODEL_ALIAS:-gemma-4-12b}
       LOCAL_BACKEND_API_KEY: ${LOCAL_BACKEND_API_KEY:?Set LOCAL_BACKEND_API_KEY in .env}
       AGENT_CANVAS_DISABLE_TELEMETRY: "1"
       OPENHANDS_WEB_SEARCH_MCP_ENABLED: ${ENABLE_WEB_SEARCH:-true}
@@ -182,9 +222,13 @@ services:
       - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
       - ${WORKSPACE_DIR:-./workspace}:${OPENHANDS_WORKSPACE_PATH:-/projects}:${OPENHANDS_WORKSPACE_MODE:-rw}
       - ./runtime/openhands-host:/run/openhands-host:ro
+      - /dev/null:/projects/.env:ro
+      - /dev/null:${OPENHANDS_WORKSPACE_PATH:-/projects}/.env:ro
       - ./runtime/openhands-npm-cache:/home/openhands/.npm
       - ./runtime/openhands-npm-global:/home/openhands/.local/npm
       - ./runtime/mcp-packages.json:/home/openhands/.local/mcp-packages.json:ro
+      - ./config/models.tsv:/opt/local-models/models.tsv:ro
+      - ./models:/models:ro
     working_dir: /home/openhands
     read_only: ${OPENHANDS_READ_ONLY_ROOT:-false}
     pids_limit: 512
@@ -194,7 +238,7 @@ services:
       - local
       - openhands-egress
     depends_on:
-      litellm:
+      openhands-llm-gateway:
         condition: service_started
       memory-mcp:
         condition: service_started
@@ -225,7 +269,7 @@ services:
       - --ctx-size
       - "512"
       - --parallel
-      - "1"
+      - "4"
       - --host
       - 0.0.0.0
       - --port
@@ -294,11 +338,12 @@ services:
       context: ./services/file-edit-mcp
     profiles: ["openhands"]
     environment:
-      OPENHANDS_HOST_HOME: ${OPENHANDS_HOST_HOME:?Set OPENHANDS_HOST_HOME in .env}
       OPENHANDS_WORKSPACE_PATH: ${OPENHANDS_WORKSPACE_PATH:-/projects}
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/projects:${OPENHANDS_WORKSPACE_MODE:-rw}
       - ${WORKSPACE_DIR:-./workspace}:${OPENHANDS_WORKSPACE_PATH:-/projects}:${OPENHANDS_WORKSPACE_MODE:-rw}
+      - /dev/null:/projects/.env:ro
+      - /dev/null:${OPENHANDS_WORKSPACE_PATH:-/projects}/.env:ro
     networks:
       - local
     restart: unless-stopped
@@ -398,26 +443,23 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     profiles: ["cuda"]
     command:
-      - -m
-      - /models/${MODEL_PATH:-not-selected.gguf}
-      - --alias
-      - local-model
+      - --models-dir
+      - /models
+      - --models-preset
+      - /app/llama-router.ini
+      - --models-max
+      - "1"
       - --host
       - 0.0.0.0
       - --port
       - "8080"
-      - --fit
-      - "on"
       - -ngl
       - ${GPU_LAYERS:-auto}
-      - --ctx-size
-      - ${CONTEXT_SIZE:-8192}
-      - --parallel
-      - "1"
-      - --flash-attn
-      - "on"
+    environment:
+      LLAMA_CACHE: /models/.llama-cache
     volumes:
-      - ./models:/models:ro
+      - ./models:/models:rw
+      - ./runtime/llama-router.ini:/app/llama-router.ini:ro
     networks:
       - local
     gpus: all

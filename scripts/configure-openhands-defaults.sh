@@ -66,6 +66,10 @@ if default_profile is not None:
         model == target_model and base_url == target_base_url and not key_is_set
     ) or (
         model == target_model and base_url == previous_local_base_url
+    ) or (
+        model == "litellm_proxy/local-model" and base_url in {
+            "http://litellm:4000/v1", "http://litellm:4000"
+        }
     )
 
 if should_seed_default:
@@ -181,19 +185,30 @@ try:
     evidence_guidance = (
         f"{evidence_start}\n"
         "<local-openhands-tools>\n"
-        f"The terminal starts at {os.environ['OPENHANDS_WORKSPACE_PATH']}. "
-        f"The user's WSL home is mounted at {os.environ['OPENHANDS_HOST_HOME']}; resolve user ~ paths there. "
-        "Use workspace-relative or original host absolute paths in tools. "
+        f"The host workspace is {os.environ['OPENHANDS_WORKSPACE_PATH']}; the Docker project is mounted at /projects. "
+        "Docker mode exposes only the project workspace to file tools and shell. "
+        "My PC (WSL) mode runs shell commands as the WSL user and can access host paths the user can access. "
+        "Use workspace-relative paths in Docker mode and host absolute paths in My PC mode. "
         "When the user gives a file path, read that path directly even if it is untracked. "
         "Repo search covers tracked files and cannot establish whether an untracked path exists. "
-        "To edit an existing host file, use read_file_lines then replace_text with its short revision. "
-        "For new files use create_file. For multi-file changes use bulk_edit. "
+        "For files in the project workspace, edit existing files with read_file_lines then replace_text and its short revision. "
+        "For host files outside the project in My PC mode, use the host terminal. "
+        "The Jetson is an optional remote development target. Use jetson-host_jetson_exec only when the "
+        "user explicitly asks for Jetson work; otherwise keep working in the normal selected workspace. "
+        "For Jetson work, follow .openhands/skills/jetson-connect/SKILL.md and use the MCP tool as michael, "
+        "who has sudo access. The tool runs SSH through the host without exposing the key to Docker. "
+        "Preserve user data and SSD contents unless the user explicitly requests a destructive storage operation. "
+        "Use /home/michael/AI/jetson/connect_jetson.sh in My PC (WSL) mode only for USB-network setup or "
+        "when the MCP tool is unavailable. "
+        "For new project files, create missing parents with create_directory, then use create_file. "
+        "For multi-file changes use bulk_edit. Never delete or recreate a project to recover from a file error. "
         "Use repo_search for tracked files. For an exact identifier, one exact search is enough. "
         "If a user-supplied identifier returns no_match, say it was not found in tracked files. "
         "For a topic, use automatic or hybrid search. Use a distinctive short term and fall back to "
         "git grep or rg when the results miss the target. Use docs_lookup for dependency constraints, "
         "symbol_lookup for definitions, and check_changes for Git and Python syntax checks. "
         "Use the terminal for project commands and tests. Use the web search or fetch tools for web requests. "
+        "Work through the user's requested deliverables before replying. Keep a short checklist, correct tool errors from their full output, and verify each item. Do not stop after a plan or after the first failed attempt. "
         "This Canvas serves the owner backend. By default, questions about its OpenHands setup "
         "refer to the owner backend. For portable client questions use repo_search with scope=client. "
         "Use scope=all when explicitly searching both deployments. "
@@ -229,6 +244,76 @@ try:
         print("Configured OpenHands workspace and tool instructions.")
     else:
         print("OpenHands workspace and tool instructions are already configured.")
+
+    # Agent profiles store their own prompt suffix; they do not inherit the
+    # global settings suffix. Add the marker to each OpenHands profile so the
+    # local gpt-oss compatibility hook applies to real Canvas conversations.
+    profiles_url = "http://127.0.0.1:18000/api/agent-profiles"
+    profile_list = request_json(profiles_url)
+    profile_updates = 0
+    for profile_info in profile_list.get("profiles", []):
+        name = profile_info.get("name")
+        if not name:
+            continue
+        detail = request_json(f"{profiles_url}/{name}")
+        profile = detail.get("profile", {})
+        if profile.get("agent_kind") == "acp":
+            continue
+        current = profile.get("system_message_suffix") or ""
+        retained = re.sub(
+            re.escape(evidence_start) + r".*?" + re.escape(evidence_end),
+            "", current, flags=re.S,
+        ).strip()
+        profile["system_message_suffix"] = (retained + "\n\n" + evidence_guidance).strip()
+        request_json(f"{profiles_url}/{name}", method="POST", payload=profile)
+        profile_updates += 1
+    print(f"Configured local tool guidance on {profile_updates} OpenHands agent profile(s).")
+
+    # Offer a selectable coding profile that prioritizes finishing and verifying
+    # the requested work. Keep it separate from the active profile so startup
+    # never changes the user's current agent choice.
+    completion_profile_name = "Finish-and-Verify"
+    completion_marker = "<finish-and-verify-workflow>"
+    completion_guidance = (
+        f"{completion_marker}\n"
+        "For coding or implementation tasks, keep working until every requested deliverable is complete. "
+        "Do not stop after planning, describing a fix, or making the first edit. Track the requested work in a "
+        "short checklist and close each item with evidence. Implement the feature or fix, then run the relevant "
+        "dry run or smoke test to exercise it. Add or update unit tests for the behavior and run those tests. "
+        "After the changes and checks, review the complete diff in OpenHands: inspect each changed file, look for "
+        "bugs, regressions, missing cases, and accidental changes, and fix any issues found. Re-run affected checks "
+        "after review fixes. If a command or check cannot run, make a reasonable second attempt or use the closest "
+        "available verification, then report exactly what remains unverified and why. Finish with a concise summary "
+        "of the implementation, tests and smoke checks run, and review findings.\n"
+        "</finish-and-verify-workflow>"
+    )
+    current_profiles = request_json(profiles_url)
+    completion_exists = any(
+        item.get("name") == completion_profile_name
+        for item in current_profiles.get("profiles", [])
+    )
+    default_detail = request_json(f"{profiles_url}/default")
+    completion_profile = dict(default_detail.get("profile", {}))
+    completion_profile.pop("id", None)
+    completion_profile.pop("revision", None)
+    completion_profile["name"] = completion_profile_name
+    suffix = completion_profile.get("system_message_suffix") or ""
+    suffix = re.sub(
+        re.escape(completion_marker) + r".*?</finish-and-verify-workflow>",
+        "", suffix, flags=re.S,
+    ).strip()
+    completion_profile["system_message_suffix"] = (
+        suffix + "\n\n" + completion_guidance
+    ).strip()
+    request_json(
+        f"{profiles_url}/{completion_profile_name}",
+        method="POST",
+        payload=completion_profile,
+    )
+    print(
+        f"{'Updated' if completion_exists else 'Created'} selectable OpenHands agent profile "
+        f"{completion_profile_name}; active profile was left unchanged."
+    )
 except Exception as exc:  # preserve stack availability if the profile schema changes
     print(f"Could not apply OpenHands file-editing guidance: {exc}")
 PY

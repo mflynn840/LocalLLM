@@ -34,17 +34,20 @@ def request(path, method="GET", data=None, extra_headers=None):
         raise RuntimeError(f"Canvas {method} {path}: HTTP {exc.code}") from exc
 
 
-def chat(question):
+def chat(question, tags=None):
     settings = request("/settings", extra_headers={"X-Expose-Secrets": "encrypted"})
-    conversation = request("/conversations", "POST", {
+    payload = {
         "agent_settings": settings["agent_settings"],
         "secrets_encrypted": True,
         "workspace": {"working_dir": str(ROOT)},
         "max_iterations": 6,
         "autotitle": False,
-        "tags": {"purpose": "local-repo-verification"},
+        "tags": tags or {"purpose": "local-repo-verification"},
         "initial_message": {"role": "user", "content": [{"type": "text", "text": question}]},
-    })
+    }
+    if payload["tags"].get("localterminal") == "wsl":
+        payload.update({"worktree": False, "worktree_options": None, "conversation_runtime": "local"})
+    conversation = request("/conversations", "POST", payload)
     path = "/conversations/" + conversation["id"]
     try:
         assert Path(conversation["workspace"]["working_dir"]) == ROOT
@@ -69,7 +72,10 @@ def chat(question):
         return {"status": status, "answer": response or "", "actions": actions,
                 "observations": observations, "seconds": round(time.monotonic() - start, 2)}
     finally:
-        request(path, "DELETE")
+        if os.environ.get("EVAL_KEEP_CONVERSATION") == "1":
+            print(f"KEPT_CONVERSATION {conversation['id']}", flush=True)
+        else:
+            request(path, "DELETE")
 
 
 def summarize(name, result, passed):
@@ -165,6 +171,35 @@ def main():
                   and any(name.endswith("search_web") for name in tools)
                   and any(not event.get("observation", {}).get("is_error", False) for event in observations))
         capabilities.append(summarize("web", result, passed))
+
+    if not selected or "wsl-files" in selected:
+        sample = os.environ.get("EVAL_WSL_SAMPLE_PATH", "")
+        token = os.environ.get("EVAL_WSL_TOKEN", "")
+        expected_user = os.environ.get("EVAL_WSL_USER", "")
+        if not sample or not token or not expected_user:
+            raise RuntimeError("wsl-files requires a host fixture path, token, and WSL username.")
+        result = chat(
+            f"In My PC (WSL) mode, read the temporary file at {sample}, which is outside this project. "
+            "Do not change it. Report the exact TOKEN value, the username from whoami, and the working "
+            "directory from pwd. Use the terminal for the WSL file.",
+            tags={"purpose": "wsl-file-access-evaluation", "localterminal": "wsl"},
+        )
+        terminal_actions = [event for event in result["actions"] if event.get("tool_name") == "terminal"]
+        terminal_evidence = json.dumps([
+            event for event in result["observations"] if event.get("tool_name") == "terminal"
+        ])
+        passed = (
+            result["status"] == "finished"
+            and bool(terminal_actions)
+            and sample in terminal_evidence
+            and token in terminal_evidence
+            and expected_user in terminal_evidence
+            and str(ROOT) in terminal_evidence
+            and token in result["answer"]
+            and expected_user in result["answer"]
+            and sample in result["answer"]
+        )
+        capabilities.append(summarize("wsl-files", result, passed))
 
     print("SUMMARY " + json.dumps({"repo": [sum(repo_results), len(repo_results)],
                                    "capabilities": [sum(capabilities), len(capabilities)]}), flush=True)

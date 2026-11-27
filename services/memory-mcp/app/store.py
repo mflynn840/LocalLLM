@@ -46,7 +46,7 @@ def _ensure_collection() -> None:
 def _embed(text: str) -> list[float]:
     response = httpx.post(
         f"{EMBEDDING_URL}/embeddings",
-        json={"model": EMBEDDING_MODEL, "input": text.encode()[:420].decode(errors="ignore")},
+        json={"model": EMBEDDING_MODEL, "input": text.encode()[:300].decode(errors="ignore")},
         timeout=60,
     )
     response.raise_for_status()

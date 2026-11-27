@@ -5,11 +5,11 @@ import os
 import pty
 import select
 import socket
-import struct
 import subprocess
 import sys
 import termios
-import fcntl
+import signal
+import time
 
 
 def serve(path: str, workspace: str) -> None:
@@ -32,34 +32,76 @@ def serve(path: str, workspace: str) -> None:
                     break
                 header += chunk
             request = json.loads(header)
-            cwd = os.path.realpath(request.get("cwd") or workspace)
+            if request.get("operation") == "jetson_exec":
+                command = request.get("command")
+                if not isinstance(command, str) or not command.strip() or len(command) > 4096:
+                    conn.sendall(b'{"exit_code":2,"stdout":"","stderr":"command must contain 1-4096 characters"}\n')
+                    continue
+                try:
+                    result = subprocess.run(
+                        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "jetson", command],
+                        capture_output=True, text=True, errors="replace", timeout=120,
+                    )
+                    response = {
+                        "exit_code": result.returncode,
+                        "stdout": result.stdout[:65536],
+                        "stderr": result.stderr[:65536],
+                    }
+                except subprocess.TimeoutExpired as error:
+                    response = {
+                        "exit_code": 124,
+                        "stdout": (error.stdout or b"").decode(errors="replace")[:65536]
+                            if isinstance(error.stdout, bytes) else (error.stdout or "")[:65536],
+                        "stderr": "Jetson SSH command timed out after 120 seconds.",
+                    }
+                conn.sendall((json.dumps(response) + "\n").encode())
+                continue
+            requested_cwd = request.get("cwd") or workspace
+            if requested_cwd == "/projects":
+                requested_cwd = workspace
+            elif requested_cwd.startswith("/projects/"):
+                requested_cwd = os.path.join(workspace, requested_cwd[len("/projects/"):])
+            cwd = os.path.realpath(requested_cwd)
             if not os.path.isdir(cwd) or not os.access(cwd, os.R_OK | os.X_OK):
                 conn.sendall(b"ERROR: working directory must exist and be accessible to the WSL user\n")
                 continue
-            master, slave = pty.openpty()
-            proc = subprocess.Popen(["/bin/bash", "-i"], cwd=cwd, stdin=slave, stdout=slave,
-                                    stderr=slave, close_fds=True, start_new_session=True)
-            os.close(slave)
+            pid, master = pty.fork()
+            if pid == 0:
+                os.chdir(cwd)
+                os.execvpe("/bin/bash", ["/bin/bash", "--login", "-i"], os.environ.copy())
+            child_status = None
+            disconnected = False
             try:
-                while proc.poll() is None:
+                while child_status is None and not disconnected:
                     readable, _, _ = select.select([conn, master], [], [], 0.25)
                     for source in readable:
                         data = source.recv(4096) if source is conn else os.read(master, 4096)
                         if not data:
-                            proc.terminate()
+                            disconnected = source is conn
                             break
                         if source is conn:
                             os.write(master, data)
                         else:
                             conn.sendall(data)
-                if proc.poll() is None:
-                    proc.wait(timeout=2)
+                    waited, child_status = os.waitpid(pid, os.WNOHANG)
+                    if not waited:
+                        child_status = None
             finally:
                 os.close(master)
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait()
-        except (ValueError, json.JSONDecodeError, OSError, struct.error):
+                if child_status is None:
+                    try:
+                        os.killpg(pid, signal.SIGTERM)
+                        for _ in range(20):
+                            waited, child_status = os.waitpid(pid, os.WNOHANG)
+                            if waited:
+                                break
+                            time.sleep(0.05)
+                        if child_status is None:
+                            os.killpg(pid, signal.SIGKILL)
+                        os.waitpid(pid, 0)
+                    except (ProcessLookupError, ChildProcessError):
+                        pass
+        except (ValueError, OSError):
             pass
         finally:
             conn.close()
@@ -96,7 +138,7 @@ def client(path: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "serve" and len(sys.argv) == 4:
         serve(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) == 2 and sys.argv[1] == "client":
+    elif len(sys.argv) >= 2 and sys.argv[1] == "client":
         client("/run/openhands-host/terminal.sock")
     else:
         raise SystemExit("usage: host-terminal.py serve SOCKET WORKSPACE | client")

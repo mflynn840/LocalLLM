@@ -85,11 +85,15 @@ Backend owner OpenHands uses `LITELLM_MASTER_KEY` internally. Client instances u
 
 OpenCode has automatic compaction enabled in [config/opencode.json](./config/opencode.json). It starts compacting with a 15% context buffer (at least 16,000 tokens), so with a 100,000-token context it begins at about 84,000 tokens. The compacted conversation keeps roughly the latest 15,000 tokens alongside its summary. Compaction uses the selected local model through LiteLLM.
 
+OpenHands provisions a selectable **Finish-and-Verify** agent profile in Settings > Agent. Use it for coding tasks when you want the agent to continue through implementation, a relevant smoke or dry run, unit tests, and a final review of every changed file. It does not replace or activate over your current profile. Startup refreshes its instructions while preserving the default profile's model and tool configuration.
+
 ## Use the coding agent
 
-Open WebUI is a chat interface; use OpenHands when you want an agent to inspect or edit files. The backend owner OpenHands mounts the project root at `/projects` and at its original WSL absolute path, and mounts the WSL user's home directory at the same absolute path inside the container. Shell commands start in the project root. This lets the owner agent use paths such as `/home/michael/AI/example` directly; `~` still means the container's own `/home/openhands`, so agent guidance maps user `~/...` paths to the WSL home. The rest of the WSL filesystem remains available under `/host`. Client mode mounts only `client/workspace`; it has no host filesystem mount or Docker socket.
+Open WebUI is a chat interface; use OpenHands when you want an agent to inspect or edit files. In Docker mode, the owner agent sees only the project checkout at `/projects` and its original WSL path. The WSL home and filesystem root are not mounted, and the project's `.env` is masked inside the container. OpenHands runs as an unprivileged container user; its persistent settings remain in the state volume. Process count is limited to 512, and memory/CPU default to 16 GiB / 8 CPUs (`OPENHANDS_MEMORY_LIMIT` and `OPENHANDS_CPU_LIMIT` in `.env`).
 
-OpenHands runs as container root with `HOME=/home/openhands` so its settings, session key, and profiles stay in the mounted persistent state volume. The entire WSL filesystem is mounted read/write at `/host`; DAC override capabilities let it access files regardless of their host ownership or mode. Commands run inside the container, and the host Docker socket is not mounted. Process count is limited to 512, and memory/CPU default to 16 GiB / 8 CPUs (`OPENHANDS_MEMORY_LIMIT` and `OPENHANDS_CPU_LIMIT` in `.env`). The owner UI binds to localhost. OpenHands has read/write access to files and credentials in WSL through `/host`, and full-control mode can run commands without per-command approval by default. Start with a bounded task and review changes.
+The Canvas includes a LocalLLM picker for new conversations. It lists downloaded catalog models, shows unavailable models in gray with a download action and progress, and offers context and reasoning-effort settings when the selected model advertises them. Each conversation keeps its own model and context choice. The llama.cpp router keeps one model loaded and queues requests while another model is serving, so a model change in one conversation cannot interrupt another conversation's active generation.
+
+In full-control mode, the Canvas execution selector can choose **Docker** or **My PC (WSL)** for each new conversation. My PC mode uses a private Unix-socket PTY bridge to run commands as your normal WSL user, from the same checkout path and with your shell startup files and installed tools. It can access any file your WSL user can access. The host bridge is available only when OpenHands full-control/networked mode is selected. Client mode mounts only `client/workspace`; it has no host filesystem mount or Docker socket. The owner UI binds to localhost.
 
 ### Sandbox levels
 
@@ -113,9 +117,10 @@ respectively for backward compatibility.
 | `full-control` (default) | Read/write | Allowed | Enabled | Read, write, and run shell commands; internet access for package downloads |
 
 The setting is applied by recreating the OpenHands service as needed. `full-control` gives the
-agent broad outbound access and shell command execution. These modes are container boundaries,
-not a substitute for reviewing agent changes or isolating sensitive host data. OpenCode runs as a
-host CLI and is **not** restricted by these OpenHands sandbox settings.
+Docker agent project write access, outbound access, and shell execution. Selecting My PC (WSL)
+also runs commands with the WSL user's full filesystem permissions. Review changes and use this
+mode only for conversations that need host tools or files. OpenCode runs as a host CLI and is
+**not** restricted by these OpenHands sandbox settings.
 
 To change the setting permanently, edit `OPENHANDS_SANDBOX_LEVEL` in `.env` (or pass
 `--sandbox-level` on each `./start.sh` run), then restart OpenHands:
@@ -153,7 +158,7 @@ docker compose exec memory-mcp python -m app.review_legacy --adopt MEMORY_UUID
 
 Open WebUI can use the same memory server through its tool picker. Share that connection only with users who should have access to this workspace's memories.
 
-OpenHands also has a `local-file-edit` MCP with line-numbered reads, exact or whitespace-tolerant replacements, helpful mismatch excerpts, and hash-guarded multi-file edits. `search_files` finds candidate paths and hashes; `bulk_edit` validates every target before applying the changes. Creating a file refuses to overwrite an existing one. The helper runs as a separate service using a pinned MCP SDK and can reach the WSL filesystem through `/host`.
+OpenHands also has a `local-file-edit` MCP with line-numbered reads, exact or whitespace-tolerant replacements, helpful mismatch excerpts, and hash-guarded multi-file edits. `search_files` finds candidate paths and hashes; `bulk_edit` validates every target before applying the changes. `create_directory` makes nested project directories, while `create_file` refuses to overwrite existing files. The helper runs as a separate service and is restricted to the mounted project workspace.
 
 Ask an agent to save useful decisions deliberately; never save credentials, tokens, or private personal information. Search results are reference data, not trusted instructions. Memory and search MCPs are private to the Docker network; only the Browser MCP relay is published, and only on host loopback.
 
@@ -263,6 +268,24 @@ For gated repositories, authenticate with `hf auth login` first. Once downloaded
 ```
 
 Omit `--quant` to use that model's catalog default. A `--model` passed to `start.sh` changes the model for that run; to change the saved startup default, use `./install.sh --model ALIAS[:QUANT]` or edit `DEFAULT_MODEL` and `DEFAULT_QUANT` in `.env`. LiteLLM continues to expose the selected model under the alias `local-model`; OpenHands and OpenCode keep using that alias when the loaded weights change.
+
+## Benchmark installed models
+
+Use the host `llama.cpp` build to measure prefill and generation throughput for downloaded GGUFs. The command uses each catalog model's default quantization, skips models without a matching downloaded GGUF, and resumes completed model/context/mode measurements in `benchmarks/results/`:
+
+```sh
+# Benchmark all installed catalog models
+./scripts/benchmark.sh
+
+# Benchmark selected models and contexts
+./scripts/benchmark.sh --model qwen3.5-9b --model gemma-4-12b \
+  --contexts 1000 10000 --mode both
+
+# Pick a quantization, or run only one measurement type
+./scripts/benchmark.sh --model qwen3-coder-30b-a3b --quant Q3_K_M --mode generation
+```
+
+The defaults use 8 threads, GPU offload, Flash Attention, llama.cpp's automatic fit with a 1 GiB margin, three repetitions through 10k context, and a 10 minute timeout per measurement. Contexts of 100k and above use one repetition. Override these with `--threads`, `--gpu-layers`, `--flash-attention`, `--fit-margin-mib`, `--repetitions`, and `--timeout`. Use `--no-resume` to rerun existing measurements. Set `LLAMA_BENCH_PATH` if `llama-bench` is outside `llama.cpp/build/bin/llama-bench`. Raw CSV and JSON results are stored under `benchmarks/results/`.
 
 ## Apple Silicon / Metal
 

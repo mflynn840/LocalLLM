@@ -214,28 +214,24 @@ up() {
     case "$sandbox_level" in
         restricted)
             export OPENHANDS_WORKSPACE_MODE=ro
-            export OPENHANDS_HOST_FILESYSTEM_MODE=ro
             export OPENHANDS_EGRESS_ISOLATED=true
             export OPENHANDS_ALLOW_COMMANDS=false
             export OPENHANDS_READ_ONLY_ROOT=true
             ;;
         read-only)
             export OPENHANDS_WORKSPACE_MODE=ro
-            export OPENHANDS_HOST_FILESYSTEM_MODE=ro
             export OPENHANDS_EGRESS_ISOLATED=true
             export OPENHANDS_ALLOW_COMMANDS=false
             export OPENHANDS_READ_ONLY_ROOT=false
             ;;
         read-write|project)
             export OPENHANDS_WORKSPACE_MODE=rw
-            export OPENHANDS_HOST_FILESYSTEM_MODE=ro
             export OPENHANDS_EGRESS_ISOLATED=true
             export OPENHANDS_ALLOW_COMMANDS=false
             export OPENHANDS_READ_ONLY_ROOT=false
             ;;
         full-control|networked)
             export OPENHANDS_WORKSPACE_MODE=rw
-            export OPENHANDS_HOST_FILESYSTEM_MODE=rw
             export OPENHANDS_EGRESS_ISOLATED=false
             export OPENHANDS_ALLOW_COMMANDS=true
             export OPENHANDS_READ_ONLY_ROOT=false
@@ -246,6 +242,13 @@ up() {
             ;;
     esac
     export OPENHANDS_SANDBOX_LEVEL="$sandbox_level"
+    export OPENHANDS_HOST_TERMINAL_ENABLED=false
+    if [[ "$agent" == "openhands" && ( "$sandbox_level" == "full-control" || "$sandbox_level" == "networked" ) ]]; then
+        bash "$ROOT/scripts/openhands-host-terminal.sh" "${OPENHANDS_WORKSPACE_PATH:-$ROOT}" start
+        export OPENHANDS_HOST_TERMINAL_ENABLED=true
+    else
+        bash "$ROOT/scripts/openhands-host-terminal.sh" "${OPENHANDS_WORKSPACE_PATH:-$ROOT}" stop
+    fi
     if [[ -z "$web_search" ]]; then
         local configured_web_search="${WEB_SEARCH_ENABLED:-true}"
         case "${configured_web_search,,}" in
@@ -272,6 +275,15 @@ up() {
     export GPU_LAYERS="$gpu_layers"
     export LLAMA_API_BASE
     export LOCAL_MODEL_ALIAS="$model"
+    export OPENHANDS_DEFAULT_MODEL_ID=litellm_proxy/local-model
+    export OPENHANDS_DEFAULT_MODEL_ALIAS="$model"
+
+    local model_server_url="http://llama-server:8080"
+    python3 "$ROOT/scripts/prepare-llama-router.py" \
+        --model "$model" --quant "$quant" --context "$context" \
+        --model-root /models --output "$ROOT/runtime/llama-router.ini"
+    python3 "$ROOT/scripts/prepare-litellm-router.py" \
+        --context "$context" --output "$ROOT/runtime/litellm-router.yaml"
 
     if [[ "$backend" == "metal" ]]; then
         stop_cuda_model
@@ -281,11 +293,12 @@ up() {
             exit 1
         fi
         LLAMA_API_BASE="http://host.docker.internal:8080/v1"
+        model_server_url="http://host.docker.internal:8080"
         export LLAMA_API_BASE
-        local serve_args=("$model")
-        [[ -n "$quant" ]] && serve_args+=(--quant "$quant")
-        serve_args+=(--context "$context" --gpu-layers "$gpu_layers")
-        "$ROOT/scripts/serve-model.sh" "${serve_args[@]}" >"$RUNTIME_DIR/llama-server.log" 2>&1 &
+        python3 "$ROOT/scripts/prepare-llama-router.py" \
+            --model "$model" --quant "$quant" --context "$context" \
+            --model-root "$ROOT/models" --output "$ROOT/runtime/llama-router-host.ini"
+        "$ROOT/scripts/serve-model-router.sh" >"$RUNTIME_DIR/llama-server.log" 2>&1 &
         echo "$!" > "$PID_FILE"
 
         local ready=0 attempt
@@ -312,13 +325,15 @@ up() {
         LLAMA_API_BASE="http://llama-server:8080/v1"
         export LLAMA_API_BASE
     fi
+    OPENHANDS_MODEL_SERVER_URL="$model_server_url"
+    export OPENHANDS_MODEL_SERVER_URL
 
     local profiles=()
     local services=(litellm litellm-db model-portal open-webui ingress)
     [[ "$backend" == "cuda" ]] && profiles+=(--profile cuda)
     if [[ "$agent" == "openhands" ]]; then
         profiles+=(--profile openhands)
-        services+=(openhands)
+        services+=(openhands-llm-gateway openhands)
         bash "$ROOT/scripts/prepare-openhands-workspace.sh"
     fi
     [[ "$backend" == "cuda" ]] && services+=(llama-server)
@@ -361,6 +376,10 @@ up() {
         echo "OpenHands sandbox: $sandbox_level"
         echo "OpenHands:   http://localhost:${OPENHANDS_PORT:-8000}/canvas"
         echo "Memory, repository evidence, file-editing, and search MCPs are provisioned automatically."
+        echo "The Canvas model picker applies model, context, and reasoning settings to new conversations."
+        if [[ "$OPENHANDS_HOST_TERMINAL_ENABLED" == "true" ]]; then
+            echo "New conversations can switch between Docker and My PC (WSL) from the Canvas execution selector."
+        fi
     else
         echo "OpenCode runs on the host and is not constrained by OpenHands sandbox settings."
         echo "OpenCode CLI: run scripts/code.sh from your project directory."
@@ -380,6 +399,7 @@ down() {
     ensure_env
     docker compose --env-file "$ROOT/.env" --profile cuda --profile openhands --profile web-search --profile mcp-install down
     stop_local_model
+    bash "$ROOT/scripts/openhands-host-terminal.sh" "${OPENHANDS_WORKSPACE_PATH:-$ROOT}" stop
     rm -f "$MODE_FILE"
 }
 

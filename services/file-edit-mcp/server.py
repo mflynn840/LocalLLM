@@ -512,7 +512,7 @@ def create_file(path: str, content: str) -> str:
     if len(encoded) > MAX_FILE_BYTES:
         raise ValueError(f"File is larger than the {MAX_FILE_BYTES}-byte edit limit.")
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o664)
     except FileExistsError:
         raise ValueError(
             f"File already exists: {target}. Read it and use replace_file_lines to edit it."
@@ -530,9 +530,19 @@ def create_file(path: str, content: str) -> str:
 def create_directory(path: str) -> str:
     """Create a directory and any missing parents inside the project workspace."""
     target = resolve_allowed_path(path)
+    missing = []
+    cursor = target
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    owner = cursor.stat()
     target.mkdir(parents=True, exist_ok=True)
     if not target.is_dir():
         raise ValueError(f"Path exists and is not a directory: {target}")
+    for directory in missing:
+        if os.geteuid() == 0:
+            os.chown(directory, owner.st_uid, owner.st_gid)
+        os.chmod(directory, 0o2775)
     return json.dumps({"ok": True, "path": str(target)}, ensure_ascii=False)
 
 

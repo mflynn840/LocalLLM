@@ -127,7 +127,10 @@ def chunks(files):
 
 
 def embed(inputs):
-    response = httpx.post(EMBEDDINGS, json={"model": "bge-small-en-v1.5", "input": inputs}, timeout=10)
+    # The local embedding server processes a batch serially on a single slot.
+    # An eight-chunk cold-index batch can exceed the ordinary short request
+    # timeout; canceling it leaves the semantic index perpetually warming.
+    response = httpx.post(EMBEDDINGS, json={"model": "bge-small-en-v1.5", "input": inputs}, timeout=60)
     response.raise_for_status()
     output = [item["embedding"] for item in sorted(response.json()["data"], key=lambda item: item["index"])]
     if len(output) != len(inputs):
@@ -142,7 +145,7 @@ def refresh(items):
     for offset in range(0, len(missing), 8):
         batch = missing[offset:offset + 8]
         try:
-            encoded = embed([f"{key[0]}\n{text}".encode()[:420].decode(errors="ignore") for key, text in batch])
+            encoded = embed([f"{key[0]}\n{text}".encode()[:300].decode(errors="ignore") for key, text in batch])
         except (httpx.HTTPError, ValueError, KeyError):
             break
         updated.update(zip((key for key, _ in batch), encoded))
@@ -230,7 +233,7 @@ def repo_search(
         semantic_status = "warming" if len(current) < len(items) else "ready"
         if current:
             try:
-                query_vector = embed(["Represent this sentence for searching relevant passages: " + needle.encode()[:300].decode(errors="ignore")])[0]
+                query_vector = embed(["Represent this sentence for searching relevant passages: " + needle.encode()[:240].decode(errors="ignore")])[0]
                 semantic = sorted(current, key=lambda key: -similarity(query_vector, current[key]))[:25]
                 scores = {}
                 for ranking in (ranked, semantic):

@@ -73,8 +73,8 @@ chgrp "$host_gid" "$manifest"
 chmod 640 "$manifest"
 
 find "$workspace" -xdev \
-    \( -type d \( -name .git -o -name .venv -o -name node_modules -o -name models -o -name runtime -o -name build \) \
-       -o -type f \( -name .env -o -name '.env.*' \) \) -prune -o \
+    \( -type d \( -name .git -o -name .venv -o -name __pycache__ -o -name node_modules -o -name models -o -name runtime -o -name build \) \
+       -o -type f \( -name .env -o -name '.env.*' -o -name '*.pyc' \) \) -prune -o \
     \( -type f -o -type d \) -exec chgrp "$host_gid" {} + \
     -type d -exec chmod g+rwx,g+s {} + -o \
     -type f -exec chmod g+rw {} +

@@ -34,8 +34,10 @@ def repeated_search(messages):
 class OpenHandsChatCompatibility(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         if (
-            os.environ.get("LOCAL_MODEL_ALIAS") != "gpt-oss-20b"
-            or data.get("model") != "local-model"
+            not (
+                (os.environ.get("LOCAL_MODEL_ALIAS") == "gpt-oss-20b" and data.get("model") == "local-model")
+                or str(data.get("model", "")).startswith("openhands-gpt-oss-20b-ctx")
+            )
             or not any(message.get("role") in {"system", "developer"}
                        and MARKER in str(message.get("content", ""))
                        for message in data.get("messages") or [])
